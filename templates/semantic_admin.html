@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>语义层后台维护</title>
+    <style>
+        :root {
+            --bg: #f6f8fc;
+            --panel: #ffffff;
+            --border: #dbe3f0;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #165dff;
+            --primary-soft: #ebf2ff;
+            --danger: #d92d20;
+            --success: #0a7f47;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(180deg, #f3f7ff 0%, #f9fbff 100%);
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .title-box h1 {
+            margin: 0 0 6px;
+            font-size: 28px;
+        }
+
+        .title-box p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: 0 10px 26px rgba(15, 23, 42, 0.04);
+            margin-bottom: 16px;
+        }
+
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+        }
+
+        .overview-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+        }
+
+        .overview-label {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .overview-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        button, .link-btn {
+            border: none;
+            background: var(--primary);
+            color: #fff;
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .secondary-btn {
+            background: var(--primary-soft);
+            color: var(--primary);
+        }
+
+        .danger-btn {
+            background: #fff1f2;
+            color: var(--danger);
+            border: 1px solid #fecdd3;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status {
+            font-size: 13px;
+            margin-top: 8px;
+            color: var(--muted);
+        }
+
+        .status.success { color: var(--success); }
+        .status.error { color: var(--danger); }
+
+        .guide-list {
+            margin: 0;
+            padding-left: 20px;
+            color: var(--text);
+            line-height: 1.7;
+        }
+
+        .section-tabs {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+
+        .tab-btn {
+            background: #f8fafc;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .tab-btn.active {
+            background: var(--primary-soft);
+            color: var(--primary);
+            border-color: #bfd1ff;
+        }
+
+        .entity-section { display: none; }
+        .entity-section.active { display: block; }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .section-header h3 {
+            margin: 0;
+            font-size: 18px;
+        }
+
+        .section-header p {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .table-wrap {
+            overflow: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-height: 720px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1200px;
+        }
+
+        th, td {
+            border-bottom: 1px solid var(--border);
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+            font-size: 13px;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f8fafc;
+            white-space: nowrap;
+        }
+
+        td input[type="text"],
+        td input[type="number"],
+        td textarea,
+        td select {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 12px;
+            color: var(--text);
+            background: #fff;
+        }
+
+        td textarea {
+            min-height: 70px;
+            resize: vertical;
+        }
+
+        td .checkbox-box {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 36px;
+        }
+
+        .row-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .row-actions button {
+            padding: 8px 10px;
+            font-size: 12px;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 8px;
+            line-height: 1.6;
+        }
+
+        .readonly-cell {
+            white-space: pre-wrap;
+            min-width: 140px;
+        }
+
+        @media (max-width: 900px) {
+            .topbar,
+            .section-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="topbar">
+        <div class="title-box">
+            <h1>语义层后台维护</h1>
+            <p>维护业务域、语义表、指标、维度、关联关系和检索索引。修改后会直接影响 ChatBI 候选表召回与 SQL 生成。</p>
+        </div>
+        <a class="link-btn secondary-btn" href="/">返回 ChatBI 页面</a>
+    </div>
+
+    <div class="card">
+        <div class="overview-grid" id="overviewGrid"></div>
+        <div class="actions">
+            <button id="syncSchemaBtn" class="secondary-btn">同步业务表结构</button>
+            <button id="rebuildBtn">重建检索索引</button>
+            <button id="refreshVectorBtn" class="secondary-btn">刷新向量索引</button>
+            <button id="reloadBtn" class="secondary-btn">重新加载配置</button>
+        </div>
+        <div class="status" id="pageStatus">正在加载语义元数据...</div>
+    </div>
+
+    <div class="card">
+        <h3>维护说明</h3>
+        <ol class="guide-list" id="guideSteps"></ol>
+        <div class="hint" id="guideTables"></div>
+    </div>
+
+    <div class="card">
+        <div class="section-tabs" id="sectionTabs"></div>
+        <div id="sectionContainer"></div>
+    </div>
+</div>
+
+<script>
+    const ENTITY_CONFIG = {
+        domains: {
+            label: '业务域',
+            description: '维护业务域和优先级。',
+            fields: [
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'domain_name', label: '域名称', type: 'text' },
+                { key: 'description', label: '说明', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        tables: {
+            label: '业务表',
+            description: '维护候选表语义。关键词、常用维度、常用指标用英文逗号或中文逗号分隔。',
+            fields: [
+                { key: 'table_name', label: '物理表名', type: 'text' },
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'business_name', label: '业务表名', type: 'text' },
+                { key: 'table_role', label: '表角色', type: 'text' },
+                { key: 'description', label: '业务说明', type: 'textarea' },
+                { key: 'table_comment', label: '表备注', type: 'textarea' },
+                { key: 'keywords_json', label: '关键词', type: 'textarea' },
+                { key: 'business_dimensions_json', label: '常用维度', type: 'textarea' },
+                { key: 'business_metrics_json', label: '常用指标', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        columns: {
+            label: '字段字典',
+            description: '来自 information_schema 的同步结果，建议只读。',
+            readOnly: true,
+            fields: [
+                { key: 'id', label: 'ID', type: 'readonly' },
+                { key: 'table_name', label: '表名', type: 'readonly' },
+                { key: 'column_name', label: '字段名', type: 'readonly' },
+                { key: 'business_name', label: '业务名', type: 'readonly' },
+                { key: 'column_comment', label: '备注', type: 'readonly' },
+                { key: 'data_type', label: '类型', type: 'readonly' },
+                { key: 'ordinal_position', label: '顺序', type: 'readonly' },
+                { key: 'is_time_dimension', label: '时间字段', type: 'readonly' },
+                { key: 'is_dimension_candidate', label: '维度候选', type: 'readonly' },
+                { key: 'is_metric_candidate', label: '指标候选', type: 'readonly' },
+                { key: 'is_active', label: '启用', type: 'readonly' },
+            ],
+        },
+        metrics: {
+            label: '指标',
+            description: '维护标准指标口径。相关表、关键词用逗号分隔。',
+            fields: [
+                { key: 'metric_code', label: '指标编码', type: 'text' },
+                { key: 'metric_name', label: '指标名称', type: 'text' },
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'definition_name', label: '定义名', type: 'text' },
+                { key: 'description', label: '口径说明', type: 'textarea' },
+                { key: 'default_expression', label: '默认表达式', type: 'textarea' },
+                { key: 'default_filters', label: '默认过滤', type: 'textarea' },
+                { key: 'related_tables_json', label: '相关表', type: 'textarea' },
+                { key: 'keywords_json', label: '关键词', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        dimensions: {
+            label: '维度',
+            description: '维护维度语义。source_expression 填默认分组字段或表达式。',
+            fields: [
+                { key: 'dimension_code', label: '维度编码', type: 'text' },
+                { key: 'dimension_name', label: '维度名称', type: 'text' },
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'description', label: '维度说明', type: 'textarea' },
+                { key: 'source_expression', label: '默认表达式', type: 'textarea' },
+                { key: 'related_tables_json', label: '相关表', type: 'textarea' },
+                { key: 'keywords_json', label: '关键词', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        joins: {
+            label: '关联关系',
+            description: 'join_condition 必须填写可直接复制到 SQL 的真实条件。',
+            fields: [
+                { key: 'join_code', label: '关联编码', type: 'text' },
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'left_table', label: '左表', type: 'text' },
+                { key: 'right_table', label: '右表', type: 'text' },
+                { key: 'join_type', label: '关联类型', type: 'text' },
+                { key: 'join_condition', label: '关联条件', type: 'textarea' },
+                { key: 'description', label: '说明', type: 'textarea' },
+                { key: 'keywords_json', label: '关键词', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        synonyms: {
+            label: '同义词',
+            description: '维护自然语言别名映射。新增时 ID 留空即可。',
+            fields: [
+                { key: 'id', label: 'ID', type: 'readonly' },
+                { key: 'target_type', label: '目标类型', type: 'text' },
+                { key: 'target_key', label: '目标编码', type: 'text' },
+                { key: 'standard_name', label: '标准名称', type: 'text' },
+                { key: 'synonym_term', label: '同义词', type: 'text' },
+                { key: 'related_tables_json', label: '相关表', type: 'textarea' },
+                { key: 'weight_score', label: '权重', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        examples: {
+            label: '问法示例',
+            description: '维护高质量 few-shot 问法。相关表/指标/维度用逗号分隔。',
+            fields: [
+                { key: 'example_key', label: '示例编码', type: 'text' },
+                { key: 'domain_key', label: '域编码', type: 'text' },
+                { key: 'question_text', label: '示例问法', type: 'textarea' },
+                { key: 'summary_text', label: '说明', type: 'textarea' },
+                { key: 'related_tables_json', label: '相关表', type: 'textarea' },
+                { key: 'related_metrics_json', label: '相关指标', type: 'textarea' },
+                { key: 'related_dimensions_json', label: '相关维度', type: 'textarea' },
+                { key: 'sql_example', label: '示例SQL', type: 'textarea' },
+                { key: 'priority_score', label: '优先级', type: 'number' },
+                { key: 'is_active', label: '启用', type: 'checkbox' },
+            ],
+        },
+        search_docs: {
+            label: '检索文档',
+            description: '全文索引与向量索引的物化结果，只读查看。',
+            readOnly: true,
+            fields: [
+                { key: 'id', label: 'ID', type: 'readonly' },
+                { key: 'source_type', label: '来源类型', type: 'readonly' },
+                { key: 'source_key', label: '来源编码', type: 'readonly' },
+                { key: 'source_name', label: '来源名称', type: 'readonly' },
+                { key: 'domain_key', label: '域编码', type: 'readonly' },
+                { key: 'related_tables_json', label: '相关表', type: 'readonly' },
+                { key: 'related_metrics_json', label: '相关指标', type: 'readonly' },
+                { key: 'related_dimensions_json', label: '相关维度', type: 'readonly' },
+                { key: 'priority_score', label: '优先级', type: 'readonly' },
+                { key: 'embedding_status', label: '向量状态', type: 'readonly' },
+                { key: 'updated_at', label: '更新时间', type: 'readonly' },
+            ],
+        },
+    };
+
+    const overviewGrid = document.getElementById('overviewGrid');
+    const guideSteps = document.getElementById('guideSteps');
+    const guideTables = document.getElementById('guideTables');
+    const sectionTabs = document.getElementById('sectionTabs');
+    const sectionContainer = document.getElementById('sectionContainer');
+    const pageStatus = document.getElementById('pageStatus');
+    const syncSchemaBtn = document.getElementById('syncSchemaBtn');
+    const rebuildBtn = document.getElementById('rebuildBtn');
+    const refreshVectorBtn = document.getElementById('refreshVectorBtn');
+    const reloadBtn = document.getElementById('reloadBtn');
+
+    let adminData = {};
+    let activeEntity = 'tables';
+
+    function setStatus(message, type = '') {
+        pageStatus.textContent = message;
+        pageStatus.className = `status ${type}`.trim();
+    }
+
+    function escapeHtml(text) {
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function renderOverview(overview) {
+        const counts = overview.counts || {};
+        const items = [
+            ['业务域', counts.domains || 0],
+            ['业务表', counts.tables || 0],
+            ['字段字典', counts.columns || 0],
+            ['指标', counts.metrics || 0],
+            ['维度', counts.dimensions || 0],
+            ['关联关系', counts.joins || 0],
+            ['同义词', counts.synonyms || 0],
+            ['问法示例', counts.examples || 0],
+            ['检索文档', counts.search_docs || 0],
+            ['待刷向量', overview.pending_embeddings || 0],
+        ];
+        overviewGrid.innerHTML = items.map(([label, value]) => `
+            <div class="overview-item">
+                <div class="overview-label">${escapeHtml(label)}</div>
+                <div class="overview-value">${escapeHtml(value)}</div>
+            </div>
+        `).join('');
+    }
+
+    function renderGuide(guide) {
+        guideSteps.innerHTML = (guide.steps || []).map(step => `<li>${escapeHtml(step)}</li>`).join('');
+        guideTables.innerHTML = (guide.tables || []).map(line => `<div>${escapeHtml(line)}</div>`).join('');
+    }
+
+    function renderTabs() {
+        sectionTabs.innerHTML = Object.entries(ENTITY_CONFIG).map(([entity, config]) => `
+            <button class="tab-btn ${entity === activeEntity ? 'active' : ''}" data-entity="${entity}">${escapeHtml(config.label)}</button>
+        `).join('');
+        Array.from(sectionTabs.querySelectorAll('.tab-btn')).forEach(btn => {
+            btn.addEventListener('click', () => {
+                activeEntity = btn.dataset.entity;
+                renderTabs();
+                renderSections();
+            });
+        });
+    }
+
+    function buildInputCell(field, value, entity) {
+        if (field.type === 'checkbox') {
+            return `<div class="checkbox-box"><input type="checkbox" data-field="${field.key}" ${Number(value) === 1 ? 'checked' : ''}></div>`;
+        }
+        if (field.type === 'textarea') {
+            return `<textarea data-field="${field.key}">${escapeHtml(value || '')}</textarea>`;
+        }
+        if (field.type === 'readonly') {
+            return `<div class="readonly-cell">${escapeHtml(value || '')}</div>`;
+        }
+        const inputType = field.type === 'number' ? 'number' : 'text';
+        const readOnlyAttr = ENTITY_CONFIG[entity].readOnly ? 'readonly' : '';
+        return `<input type="${inputType}" data-field="${field.key}" value="${escapeHtml(value || '')}" ${readOnlyAttr}>`;
+    }
+
+    function renderRows(entity, rows) {
+        const config = ENTITY_CONFIG[entity];
+        const columns = config.fields;
+        const head = columns.map(field => `<th>${escapeHtml(field.label)}</th>`).join('');
+        const actionHead = config.readOnly ? '' : '<th>操作</th>';
+        const body = rows.map((row, index) => {
+            const cells = columns.map(field => `<td>${buildInputCell(field, row[field.key], entity)}</td>`).join('');
+            const actions = config.readOnly ? '' : `
+                <td>
+                    <div class="row-actions">
+                        <button class="save-row-btn" data-entity="${entity}" data-index="${index}">保存</button>
+                        <button class="danger-btn delete-row-btn" data-entity="${entity}" data-index="${index}">删除</button>
+                    </div>
+                </td>
+            `;
+            return `<tr data-entity="${entity}" data-index="${index}">${cells}${actions}</tr>`;
+        }).join('');
+        return `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>${head}${actionHead}</tr></thead>
+                    <tbody>${body || `<tr><td colspan="${columns.length + (config.readOnly ? 0 : 1)}">暂无数据</td></tr>`}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function emptyRow(entity) {
+        const config = ENTITY_CONFIG[entity];
+        const row = {};
+        config.fields.forEach(field => {
+            row[field.key] = field.type === 'checkbox' ? 1 : '';
+        });
+        if (entity === 'joins') row.join_type = 'INNER JOIN';
+        if (entity === 'synonyms') row.weight_score = 10;
+        if (entity !== 'synonyms' && row.priority_score === '') row.priority_score = 50;
+        return row;
+    }
+
+    function renderSections() {
+        sectionContainer.innerHTML = Object.entries(ENTITY_CONFIG).map(([entity, config]) => {
+            const rows = adminData[entity] || [];
+            const addButton = config.readOnly ? '' : `<button class="secondary-btn add-row-btn" data-entity="${entity}">新增一行</button>`;
+            return `
+                <section class="entity-section ${entity === activeEntity ? 'active' : ''}" data-entity="${entity}">
+                    <div class="section-header">
+                        <div>
+                            <h3>${escapeHtml(config.label)}</h3>
+                            <p>${escapeHtml(config.description)}</p>
+                        </div>
+                        ${addButton}
+                    </div>
+                    ${renderRows(entity, rows)}
+                </section>
+            `;
+        }).join('');
+
+        Array.from(document.querySelectorAll('.add-row-btn')).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const entity = btn.dataset.entity;
+                adminData[entity] = adminData[entity] || [];
+                adminData[entity].unshift(emptyRow(entity));
+                activeEntity = entity;
+                renderTabs();
+                renderSections();
+            });
+        });
+
+        Array.from(document.querySelectorAll('.save-row-btn')).forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const entity = btn.dataset.entity;
+                const index = Number(btn.dataset.index);
+                const rowEl = document.querySelector(`tr[data-entity="${entity}"][data-index="${index}"]`);
+                try {
+                    await saveRow(entity, index, rowEl);
+                } catch (error) {
+                    setStatus(error.message, 'error');
+                }
+            });
+        });
+
+        Array.from(document.querySelectorAll('.delete-row-btn')).forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const entity = btn.dataset.entity;
+                const index = Number(btn.dataset.index);
+                if (!confirm('确认删除当前记录？')) {
+                    return;
+                }
+                try {
+                    await deleteRow(entity, index);
+                } catch (error) {
+                    setStatus(error.message, 'error');
+                }
+            });
+        });
+    }
+
+    function collectRowData(entity, rowEl) {
+        const config = ENTITY_CONFIG[entity];
+        const data = {};
+        config.fields.forEach(field => {
+            const input = rowEl.querySelector(`[data-field="${field.key}"]`);
+            if (!input) {
+                return;
+            }
+            if (field.type === 'checkbox') {
+                data[field.key] = input.checked ? 1 : 0;
+            } else {
+                data[field.key] = input.value;
+            }
+        });
+        return data;
+    }
+
+    async function saveRow(entity, index, rowEl) {
+        const rowData = collectRowData(entity, rowEl);
+        setStatus(`正在保存 ${ENTITY_CONFIG[entity].label}...`);
+        const response = await fetch(`/api/admin/semantic/${entity}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(rowData),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || '保存失败');
+        }
+        setStatus(`已保存 ${ENTITY_CONFIG[entity].label}，索引已同步更新。`, 'success');
+        await loadBootstrap(false);
+        activeEntity = entity;
+        renderTabs();
+        renderSections();
+    }
+
+    async function deleteRow(entity, index) {
+        const row = adminData[entity][index];
+        const keyField = ENTITY_CONFIG[entity].fields[0].key === 'id' ? 'id' : ENTITY_CONFIG[entity].fields[0].key;
+        const response = await fetch(`/api/admin/semantic/${entity}/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [keyField]: row[keyField] }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || '删除失败');
+        }
+        setStatus(`已删除 ${ENTITY_CONFIG[entity].label}，索引已同步更新。`, 'success');
+        await loadBootstrap(false);
+        activeEntity = entity;
+        renderTabs();
+        renderSections();
+    }
+
+    async function invokeAction(url, body, successMessage) {
+        setStatus('正在执行后台操作...');
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {}),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || '执行失败');
+        }
+        const result = data.result || {};
+        setStatus(`${successMessage} 文档数=${result.docs ?? '-'}，已刷新向量=${result.embeddings ?? 0}`, 'success');
+        await loadBootstrap(false);
+        renderTabs();
+        renderSections();
+    }
+
+    async function loadBootstrap(showLoading = true) {
+        if (showLoading) {
+            setStatus('正在加载语义元数据...');
+        }
+        const response = await fetch('/api/admin/semantic/bootstrap');
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || '加载失败');
+        }
+        adminData = data;
+        renderOverview(data.overview || {});
+        renderGuide(data.maintenance_guide || { steps: [], tables: [] });
+        Object.keys(ENTITY_CONFIG).forEach(entity => {
+            adminData[entity] = Array.isArray(data[entity]) ? data[entity] : [];
+        });
+    }
+
+    syncSchemaBtn.addEventListener('click', async () => {
+        try {
+            await invokeAction('/api/admin/semantic/sync-schema', {}, '业务表结构已同步。');
+        } catch (error) {
+            setStatus(error.message, 'error');
+        }
+    });
+
+    rebuildBtn.addEventListener('click', async () => {
+        try {
+            await invokeAction('/api/admin/semantic/rebuild', { refresh_embeddings: false }, '检索索引已重建。');
+        } catch (error) {
+            setStatus(error.message, 'error');
+        }
+    });
+
+    refreshVectorBtn.addEventListener('click', async () => {
+        try {
+            await invokeAction('/api/admin/semantic/rebuild', { refresh_embeddings: true }, '检索索引和向量已刷新。');
+        } catch (error) {
+            setStatus(error.message, 'error');
+        }
+    });
+
+    reloadBtn.addEventListener('click', async () => {
+        try {
+            await loadBootstrap(true);
+            renderTabs();
+            renderSections();
+            setStatus('已重新加载后台配置。', 'success');
+        } catch (error) {
+            setStatus(error.message, 'error');
+        }
+    });
+
+    async function bootstrapPage() {
+        try {
+            await loadBootstrap(true);
+            renderTabs();
+            renderSections();
+            setStatus('语义层后台已就绪。', 'success');
+        } catch (error) {
+            setStatus(error.message, 'error');
+        }
+    }
+
+    bootstrapPage();
+</script>
+</body>
+</html>

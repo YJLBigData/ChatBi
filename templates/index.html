@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatBI 本地测试</title>
+    <style>
+        :root {
+            --bg: #f7f8fb;
+            --panel: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #1f6feb;
+            --primary-soft: #e8f1ff;
+            --primary-border: #b8d0ff;
+            --border: #e5e7eb;
+            --ok: #0a7f47;
+            --error: #c62828;
+            --user-bg: #ebf3ff;
+            --assistant-bg: #f7f8fb;
+            --metric-bg: #eefcf5;
+            --metric-border: #b7e4cb;
+            --dim-bg: #eff6ff;
+            --dim-border: #bfdbfe;
+            --disabled: #cbd5e1;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #eef3ff 0%, #f9fbff 40%, #ffffff 100%);
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 18px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
+            margin-bottom: 16px;
+        }
+
+        h1 {
+            margin: 0 0 12px;
+            font-size: 24px;
+        }
+
+        h3 {
+            margin: 0 0 12px;
+            font-size: 18px;
+        }
+
+        .chat-box {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 180px;
+            max-height: 360px;
+            overflow-y: auto;
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        }
+
+        .message {
+            max-width: 88%;
+            padding: 12px 14px;
+            border-radius: 14px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background: var(--user-bg);
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+            background: var(--assistant-bg);
+            border-bottom-left-radius: 4px;
+            border: 1px solid var(--border);
+        }
+
+        .message-role {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 96px;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            resize: vertical;
+            outline: none;
+            font-size: 14px;
+        }
+
+        textarea:focus,
+        input:focus,
+        select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.15);
+        }
+
+        .engine-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+
+        .engine-row label {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .engine-row select {
+            min-width: 220px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            font-size: 14px;
+            background: #fff;
+            outline: none;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+
+        button,
+        .actions a {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            padding: 10px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .secondary-btn {
+            background: var(--primary-soft);
+            color: var(--primary);
+        }
+
+        .status {
+            margin-top: 12px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .status.ok { color: var(--ok); }
+        .status.error { color: var(--error); }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 14px;
+        }
+
+        .meta-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        }
+
+        .meta-label {
+            margin: 0 0 8px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .meta-value {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .chip-box {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            min-height: 40px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1;
+            border: 1px solid transparent;
+        }
+
+        .chip.dimension {
+            background: var(--dim-bg);
+            border-color: var(--dim-border);
+            color: #1d4ed8;
+        }
+
+        .chip.metric {
+            background: var(--metric-bg);
+            border-color: var(--metric-border);
+            color: #0a7f47;
+        }
+
+        .chip-separator {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .table-wrap {
+            overflow: auto;
+            max-height: 500px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            border-bottom: 1px solid var(--border);
+            padding: 8px 10px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #f9fafb;
+            z-index: 1;
+        }
+
+        .view-switch {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+            flex-wrap: wrap;
+        }
+
+        .view-btn {
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+
+        .view-btn.active {
+            background: var(--primary-soft);
+            border-color: var(--primary-border);
+            color: var(--primary);
+        }
+
+        .view-btn.disabled {
+            background: #f8fafc;
+            border-color: var(--border);
+            color: var(--disabled);
+            cursor: not-allowed;
+        }
+
+        .chart-panel {
+            display: none;
+            margin-top: 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        }
+
+        .chart-title {
+            margin: 0 0 12px;
+            font-size: 14px;
+            color: var(--muted);
+        }
+
+        .chart-svg {
+            width: 100%;
+            display: block;
+        }
+
+        .chart-legend text {
+            font-size: 12px;
+            fill: var(--text);
+        }
+
+        pre {
+            background: #0f172a;
+            color: #f1f5f9;
+            border-radius: 10px;
+            padding: 12px;
+            overflow-x: auto;
+            margin: 0;
+            font-size: 13px;
+        }
+
+        .time-range-row {
+            display: none;
+            margin-top: 12px;
+            padding: 14px;
+            border: 1px dashed var(--primary-border);
+            border-radius: 12px;
+            background: #f8fbff;
+        }
+
+        .time-range-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .time-range-title {
+            font-size: 14px;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .time-range-tip {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .time-range-inputs {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .time-range-inputs input {
+            min-width: 180px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 14px;
+            outline: none;
+            background: #fff;
+        }
+
+        .placeholder-line {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 16px;
+            }
+
+            .message {
+                max-width: 100%;
+            }
+
+            .time-range-inputs input {
+                min-width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <h1>ChatBI 本地测试</h1>
+        <div id="chatBox" class="chat-box"></div>
+    </div>
+
+    <div class="card">
+        <h3>输入问题</h3>
+        <textarea id="question" placeholder="示例：按销售大区统计近30天销售金额和订单数，按销售金额降序"></textarea>
+        <div class="engine-row">
+            <label for="llmProvider">模型引擎</label>
+            <select id="llmProvider">
+                {% for option in llm_provider_options %}
+                <option value="{{ option.value }}">{{ option.label }} / {{ option.model }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div id="timeRangeRow" class="time-range-row">
+            <div class="time-range-head">
+                <div>
+                    <div id="timeRangeTitle" class="time-range-title">时间范围调整</div>
+                    <div id="timeRangeTip" class="time-range-tip"></div>
+                </div>
+            </div>
+            <div class="time-range-inputs">
+                <input id="timeRangeStart" type="date">
+                <input id="timeRangeEnd" type="date">
+            </div>
+        </div>
+        <div class="actions">
+            <button id="submitBtn">发送问题</button>
+            <button id="newConversationBtn" class="secondary-btn">新对话</button>
+            <a id="semanticAdminBtn" class="secondary-btn" href="/admin/semantic">语义层维护</a>
+        </div>
+        <div id="status" class="status">等待输入问题...</div>
+    </div>
+
+    <div class="card">
+        <h3>指标信息</h3>
+        <div class="meta-grid">
+            <div class="meta-item">
+                <p class="meta-label">指标定义</p>
+                <p id="metricDefinition" class="meta-value">-- 暂无指标定义</p>
+            </div>
+            <div class="meta-item">
+                <p class="meta-label">指标描述</p>
+                <p id="metricDescription" class="meta-value">-- 暂无指标描述</p>
+            </div>
+            <div class="meta-item">
+                <p class="meta-label">维度</p>
+                <div id="dimensionBox" class="chip-box"><span class="placeholder-line">-- 暂无维度</span></div>
+            </div>
+            <div class="meta-item">
+                <p class="meta-label">指标</p>
+                <div id="metricBox" class="chip-box"><span class="placeholder-line">-- 暂无指标</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>查询结果</h3>
+        <div id="tableSection" class="table-wrap">
+            <table id="resultTable"></table>
+        </div>
+        <div class="view-switch">
+            <button id="tableViewBtn" class="view-btn active">列表</button>
+            <button id="barViewBtn" class="view-btn disabled">柱图</button>
+            <button id="pieViewBtn" class="view-btn disabled">饼图</button>
+        </div>
+        <div id="chartPanel" class="chart-panel"></div>
+    </div>
+
+    <div class="card">
+        <h3>生成 SQL</h3>
+        <pre id="sqlBox">-- 暂无 SQL</pre>
+    </div>
+</div>
+
+<script>
+    const submitBtn = document.getElementById('submitBtn');
+    const newConversationBtn = document.getElementById('newConversationBtn');
+    const questionInput = document.getElementById('question');
+    const chatBox = document.getElementById('chatBox');
+    const statusEl = document.getElementById('status');
+    const metricDefinitionEl = document.getElementById('metricDefinition');
+    const metricDescriptionEl = document.getElementById('metricDescription');
+    const dimensionBoxEl = document.getElementById('dimensionBox');
+    const metricBoxEl = document.getElementById('metricBox');
+    const tableEl = document.getElementById('resultTable');
+    const tableSectionEl = document.getElementById('tableSection');
+    const chartPanelEl = document.getElementById('chartPanel');
+    const tableViewBtn = document.getElementById('tableViewBtn');
+    const barViewBtn = document.getElementById('barViewBtn');
+    const pieViewBtn = document.getElementById('pieViewBtn');
+    const sqlBox = document.getElementById('sqlBox');
+    const timeRangeRowEl = document.getElementById('timeRangeRow');
+    const timeRangeTitleEl = document.getElementById('timeRangeTitle');
+    const timeRangeTipEl = document.getElementById('timeRangeTip');
+    const timeRangeStartEl = document.getElementById('timeRangeStart');
+    const timeRangeEndEl = document.getElementById('timeRangeEnd');
+    const llmProviderSelect = document.getElementById('llmProvider');
+
+    const CHART_COLORS = ['#1f6feb', '#0ea5e9', '#0a7f47', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#84cc16', '#e11d48', '#06b6d4', '#4f46e5'];
+    const CONVERSATION_STORAGE_KEY = 'chatbi_conversation_id';
+    const LLM_PROVIDER_STORAGE_KEY = 'chatbi_llm_provider';
+    const DEFAULT_LLM_PROVIDER = {{ default_llm_provider|tojson }};
+
+    let conversationId = loadConversationId();
+    let currentResultState = {
+        columns: [],
+        rows: [],
+        chartTitle: '',
+        chartLabelField: '',
+        chartValueField: '',
+        chartItems: null,
+        activeView: 'list',
+    };
+    let lastTimeMeta = {
+        enabled: false,
+        dimension: '',
+        granularity: 'none',
+        start: '',
+        end: '',
+    };
+    let pendingTimeRefinement = false;
+
+    function createConversationId() {
+        return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function loadConversationId() {
+        return window.localStorage.getItem(CONVERSATION_STORAGE_KEY) || createConversationId();
+    }
+
+    function persistConversationId() {
+        window.localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
+    }
+
+    function loadLlmProvider() {
+        return window.localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || DEFAULT_LLM_PROVIDER;
+    }
+
+    function persistLlmProvider(provider) {
+        window.localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, provider);
+    }
+
+    function setStatus(text, type) {
+        statusEl.textContent = text;
+        statusEl.className = `status ${type || ''}`;
+    }
+
+    function updateSubmitButtonText() {
+        const question = questionInput.value.trim();
+        submitBtn.textContent = (!question && pendingTimeRefinement) ? '再次提问' : '发送问题';
+    }
+
+    function addMessage(role, text) {
+        const messageEl = document.createElement('div');
+        messageEl.className = `message ${role}`;
+
+        const roleEl = document.createElement('span');
+        roleEl.className = 'message-role';
+        roleEl.textContent = role === 'user' ? '你' : '助手';
+
+        const textEl = document.createElement('div');
+        textEl.textContent = text;
+
+        messageEl.appendChild(roleEl);
+        messageEl.appendChild(textEl);
+        chatBox.appendChild(messageEl);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function renderChipList(container, values, type, emptyText) {
+        container.innerHTML = '';
+        if (!values || values.length === 0) {
+            container.innerHTML = `<span class="placeholder-line">${emptyText}</span>`;
+            return;
+        }
+        values.forEach((value, index) => {
+            const chip = document.createElement('span');
+            chip.className = `chip ${type}`;
+            chip.textContent = value;
+            container.appendChild(chip);
+            if (index < values.length - 1) {
+                const separator = document.createElement('span');
+                separator.className = 'chip-separator';
+                separator.textContent = '•';
+                container.appendChild(separator);
+            }
+        });
+    }
+
+    function renderTable(columns, rows) {
+        if (!columns || columns.length === 0) {
+            tableEl.innerHTML = '<tr><td>无结果</td></tr>';
+            return;
+        }
+        const thead = `<thead><tr>${columns.map(col => `<th>${col}</th>`).join('')}</tr></thead>`;
+        const tbodyRows = rows.map(row => `<tr>${columns.map(col => `<td>${row[col] ?? ''}</td>`).join('')}</tr>`).join('');
+        tableEl.innerHTML = thead + `<tbody>${tbodyRows}</tbody>`;
+    }
+
+    function resetResultState() {
+        currentResultState = {
+            columns: [],
+            rows: [],
+            chartTitle: '',
+            chartLabelField: '',
+            chartValueField: '',
+            chartItems: null,
+            activeView: 'list',
+        };
+        tableEl.innerHTML = '';
+        chartPanelEl.innerHTML = '';
+        chartPanelEl.style.display = 'none';
+        tableSectionEl.style.display = 'block';
+        setViewButtonState(tableViewBtn, true, true);
+        setViewButtonState(barViewBtn, false, false);
+        setViewButtonState(pieViewBtn, false, false);
+    }
+
+    function resetPanels() {
+        metricDefinitionEl.textContent = '-- 暂无指标定义';
+        metricDescriptionEl.textContent = '-- 暂无指标描述';
+        renderChipList(dimensionBoxEl, [], 'dimension', '-- 暂无维度');
+        renderChipList(metricBoxEl, [], 'metric', '-- 暂无指标');
+        sqlBox.textContent = '-- 暂无 SQL';
+        resetResultState();
+        hideTimeRange();
+    }
+
+    function setViewButtonState(button, enabled, active) {
+        button.disabled = !enabled;
+        button.classList.toggle('disabled', !enabled);
+        button.classList.toggle('active', !!active);
+    }
+
+    function toNumber(value) {
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+        const normalized = String(value).replace(/,/g, '');
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function escapeXml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
+    function compactSeries(items, maxItems = 12) {
+        if (items.length <= maxItems) {
+            return items;
+        }
+        const kept = items.slice(0, maxItems - 1);
+        const otherValue = items.slice(maxItems - 1).reduce((sum, item) => sum + item.value, 0);
+        kept.push({ label: '其他', value: otherValue });
+        return kept;
+    }
+
+    function detectChartSeries(columns, rows, preferredLabelField, preferredValueField) {
+        if (!rows || rows.length === 0 || !columns || columns.length === 0) {
+            return null;
+        }
+
+        const numericColumns = columns.filter(col => rows.some(row => toNumber(row[col]) !== null) && rows.every(row => row[col] === null || row[col] === undefined || toNumber(row[col]) !== null));
+        const labelColumns = columns.filter(col => !numericColumns.includes(col));
+
+        let items = [];
+
+        if (preferredLabelField && preferredValueField && columns.includes(preferredValueField)) {
+            if (rows.length > 1) {
+                items = rows.map((row, index) => ({
+                    label: String(row[preferredLabelField] ?? `第${index + 1}行`),
+                    value: toNumber(row[preferredValueField]),
+                }));
+            } else {
+                const value = toNumber(rows[0][preferredValueField]);
+                items = [{ label: String(rows[0][preferredLabelField] ?? preferredValueField), value }];
+            }
+        } else if (rows.length === 1) {
+            items = numericColumns.map(col => ({ label: col, value: toNumber(rows[0][col]) }));
+        } else {
+            const valueColumn = preferredValueField && numericColumns.includes(preferredValueField) ? preferredValueField : numericColumns[0];
+            const labelColumn = preferredLabelField && columns.includes(preferredLabelField)
+                ? preferredLabelField
+                : (labelColumns[0] || columns[0]);
+            if (!valueColumn) {
+                return null;
+            }
+            items = rows.map((row, index) => ({
+                label: String(row[labelColumn] ?? `第${index + 1}行`),
+                value: toNumber(row[valueColumn]),
+            }));
+        }
+
+        items = items.filter(item => item.value !== null);
+        if (items.length === 0) {
+            return null;
+        }
+        return compactSeries(items);
+    }
+
+    function renderBarChart(items, title) {
+        const width = 760;
+        const rowHeight = 34;
+        const topPadding = 24;
+        const leftLabelWidth = 160;
+        const rightPadding = 90;
+        const barMaxWidth = width - leftLabelWidth - rightPadding;
+        const height = topPadding + items.length * rowHeight + 20;
+        const maxValue = Math.max(...items.map(item => item.value), 1);
+
+        const bars = items.map((item, index) => {
+            const y = topPadding + index * rowHeight;
+            const barWidth = (item.value / maxValue) * barMaxWidth;
+            const color = CHART_COLORS[index % CHART_COLORS.length];
+            return `
+                <text x="0" y="${y + 18}" font-size="12" fill="#1f2937">${escapeXml(item.label)}</text>
+                <rect x="${leftLabelWidth}" y="${y + 4}" width="${barWidth}" height="18" rx="6" fill="${color}"></rect>
+                <text x="${leftLabelWidth + barWidth + 8}" y="${y + 18}" font-size="12" fill="#1f2937">${escapeXml(item.value.toFixed(2))}</text>
+            `;
+        }).join('');
+
+        return `
+            <p class="chart-title">${escapeXml(title)} - 柱图</p>
+            <svg class="chart-svg" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+                ${bars}
+            </svg>
+        `;
+    }
+
+    function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
+        const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
+        return {
+            x: centerX + radius * Math.cos(angleInRadians),
+            y: centerY + radius * Math.sin(angleInRadians),
+        };
+    }
+
+    function describeArc(centerX, centerY, radius, startAngle, endAngle) {
+        const start = polarToCartesian(centerX, centerY, radius, endAngle);
+        const end = polarToCartesian(centerX, centerY, radius, startAngle);
+        const largeArcFlag = endAngle - startAngle <= 180 ? '0' : '1';
+        return ['M', centerX, centerY, 'L', start.x, start.y, 'A', radius, radius, 0, largeArcFlag, 0, end.x, end.y, 'Z'].join(' ');
+    }
+
+    function renderPieChart(items, title) {
+        const width = 760;
+        const height = 360;
+        const centerX = 180;
+        const centerY = 180;
+        const radius = 110;
+        const total = items.reduce((sum, item) => sum + item.value, 0);
+        if (total <= 0) {
+            return '';
+        }
+
+        let startAngle = 0;
+        const paths = [];
+        const legends = [];
+        items.forEach((item, index) => {
+            const angle = (item.value / total) * 360;
+            const endAngle = startAngle + angle;
+            const color = CHART_COLORS[index % CHART_COLORS.length];
+            paths.push(`<path d="${describeArc(centerX, centerY, radius, startAngle, endAngle)}" fill="${color}"></path>`);
+            legends.push(`
+                <rect x="370" y="${40 + index * 24}" width="12" height="12" rx="3" fill="${color}"></rect>
+                <text x="390" y="${50 + index * 24}">${escapeXml(item.label)} (${((item.value / total) * 100).toFixed(1)}%)</text>
+            `);
+            startAngle = endAngle;
+        });
+
+        return `
+            <p class="chart-title">${escapeXml(title)} - 饼图</p>
+            <svg class="chart-svg" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+                ${paths.join('')}
+                <circle cx="${centerX}" cy="${centerY}" r="48" fill="#ffffff"></circle>
+                <text x="${centerX}" y="${centerY - 4}" text-anchor="middle" font-size="13" fill="#6b7280">总计</text>
+                <text x="${centerX}" y="${centerY + 18}" text-anchor="middle" font-size="16" fill="#1f2937">${escapeXml(total.toFixed(2))}</text>
+                <g class="chart-legend">
+                    ${legends.join('')}
+                </g>
+            </svg>
+        `;
+    }
+
+    function renderActiveView() {
+        const hasBar = !!currentResultState.chartItems;
+        const pieSum = hasBar ? currentResultState.chartItems.reduce((sum, item) => sum + item.value, 0) : 0;
+        const hasPie = hasBar && pieSum > 0;
+
+        setViewButtonState(tableViewBtn, true, currentResultState.activeView === 'list');
+        setViewButtonState(barViewBtn, hasBar, currentResultState.activeView === 'bar');
+        setViewButtonState(pieViewBtn, hasPie, currentResultState.activeView === 'pie');
+
+        if (currentResultState.activeView === 'list') {
+            chartPanelEl.style.display = 'none';
+            tableSectionEl.style.display = 'block';
+            return;
+        }
+
+        if (currentResultState.activeView === 'bar' && hasBar) {
+            tableSectionEl.style.display = 'none';
+            chartPanelEl.style.display = 'block';
+            chartPanelEl.innerHTML = renderBarChart(currentResultState.chartItems, currentResultState.chartTitle || '查询结果');
+            return;
+        }
+
+        if (currentResultState.activeView === 'pie' && hasPie) {
+            tableSectionEl.style.display = 'none';
+            chartPanelEl.style.display = 'block';
+            chartPanelEl.innerHTML = renderPieChart(currentResultState.chartItems, currentResultState.chartTitle || '查询结果');
+            return;
+        }
+
+        currentResultState.activeView = 'list';
+        renderActiveView();
+    }
+
+    function switchView(viewType) {
+        if (viewType === 'bar' && barViewBtn.disabled) {
+            return;
+        }
+        if (viewType === 'pie' && pieViewBtn.disabled) {
+            return;
+        }
+        currentResultState.activeView = viewType;
+        renderActiveView();
+    }
+
+    function getRangeInputType(granularity) {
+        if (granularity === 'month') return 'month';
+        if (granularity === 'week') return 'week';
+        return 'date';
+    }
+
+    function formatTimeRangeDisplay(value, granularity) {
+        if (!value) return '';
+        if (granularity === 'week') {
+            return value;
+        }
+        return value;
+    }
+
+    function showTimeRange(meta) {
+        const enabled = !!meta.dimension && meta.granularity !== 'none';
+        if (!enabled) {
+            hideTimeRange();
+            return;
+        }
+        lastTimeMeta = {
+            enabled: true,
+            dimension: meta.dimension,
+            granularity: meta.granularity,
+            start: meta.start || '',
+            end: meta.end || '',
+        };
+        pendingTimeRefinement = false;
+        const inputType = getRangeInputType(meta.granularity);
+        timeRangeStartEl.type = inputType;
+        timeRangeEndEl.type = inputType;
+        timeRangeStartEl.value = meta.start || '';
+        timeRangeEndEl.value = meta.end || '';
+        timeRangeTitleEl.textContent = `${meta.dimension || '时间'}范围调整`;
+        timeRangeTipEl.textContent = `当前粒度：${meta.granularity === 'day' ? '日' : meta.granularity === 'week' ? '周' : '月'}。修改后点击“再次提问”保持原口径继续查询。`;
+        timeRangeRowEl.style.display = 'block';
+        updateSubmitButtonText();
+    }
+
+    function hideTimeRange() {
+        lastTimeMeta = { enabled: false, dimension: '', granularity: 'none', start: '', end: '' };
+        pendingTimeRefinement = false;
+        timeRangeStartEl.value = '';
+        timeRangeEndEl.value = '';
+        timeRangeRowEl.style.display = 'none';
+        updateSubmitButtonText();
+    }
+
+    function onTimeRangeChange() {
+        if (!lastTimeMeta.enabled) {
+            return;
+        }
+        const start = timeRangeStartEl.value;
+        const end = timeRangeEndEl.value;
+        pendingTimeRefinement = !!start && !!end && (start !== lastTimeMeta.start || end !== lastTimeMeta.end);
+        updateSubmitButtonText();
+    }
+
+    function buildRefinementQuestion() {
+        const start = formatTimeRangeDisplay(timeRangeStartEl.value, lastTimeMeta.granularity);
+        const end = formatTimeRangeDisplay(timeRangeEndEl.value, lastTimeMeta.granularity);
+        return `在上一轮问题基础上，把${lastTimeMeta.dimension}范围调整为${start}到${end}，其他筛选条件和统计口径保持不变。`;
+    }
+
+    function applyResultPayload(data, options = {}) {
+        const appendAssistantMessage = options.appendAssistantMessage !== false;
+        if (appendAssistantMessage) {
+            addMessage(
+                'assistant',
+                `${data.assistant_message || '已完成查询。'}\n指标定义：${data.metric_definition}\n指标描述：${data.metric_description}`
+            );
+        }
+
+        metricDefinitionEl.textContent = data.metric_definition || '-- 暂无指标定义';
+        metricDescriptionEl.textContent = data.metric_description || '-- 暂无指标描述';
+        renderChipList(dimensionBoxEl, data.dimensions && data.dimensions.length ? data.dimensions : ['整体汇总'], 'dimension', '-- 暂无维度');
+        renderChipList(metricBoxEl, data.metrics || [], 'metric', '-- 暂无指标');
+        sqlBox.textContent = data.generated_sql || '-- 暂无 SQL';
+        renderTable(data.columns || [], data.rows || []);
+
+        currentResultState.columns = data.columns || [];
+        currentResultState.rows = data.rows || [];
+        currentResultState.chartTitle = data.chart_title || data.metric_definition || '查询结果';
+        currentResultState.chartLabelField = data.chart_label_field || '';
+        currentResultState.chartValueField = data.chart_value_field || '';
+        currentResultState.chartItems = detectChartSeries(
+            currentResultState.columns,
+            currentResultState.rows,
+            currentResultState.chartLabelField,
+            currentResultState.chartValueField,
+        );
+        currentResultState.activeView = 'list';
+        renderActiveView();
+
+        showTimeRange({
+            dimension: data.time_dimension || '',
+            granularity: data.time_granularity || 'none',
+            start: data.time_range_start || '',
+            end: data.time_range_end || '',
+        });
+    }
+
+    function resetConversation() {
+        conversationId = createConversationId();
+        persistConversationId();
+        chatBox.innerHTML = '';
+        questionInput.value = '';
+        resetPanels();
+        addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
+        setStatus('已开启新对话');
+        updateSubmitButtonText();
+    }
+
+    async function restoreConversation() {
+        llmProviderSelect.value = loadLlmProvider();
+        persistConversationId();
+        chatBox.innerHTML = '';
+        resetPanels();
+        try {
+            const response = await fetch(`/api/conversation/${encodeURIComponent(conversationId)}`);
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '恢复会话失败');
+            }
+
+            if (Array.isArray(data.messages) && data.messages.length > 0) {
+                data.messages.forEach(message => addMessage(message.role, message.content));
+            } else {
+                addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
+            }
+
+            if (data.latest_result) {
+                if (data.latest_result.llm_provider) {
+                    llmProviderSelect.value = data.latest_result.llm_provider;
+                    persistLlmProvider(data.latest_result.llm_provider);
+                }
+                applyResultPayload(data.latest_result, { appendAssistantMessage: false });
+                setStatus('已恢复上一次会话', 'ok');
+            } else {
+                setStatus('已恢复会话');
+            }
+        } catch (error) {
+            chatBox.innerHTML = '';
+            resetPanels();
+            addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
+            setStatus(`恢复历史会话失败：${error.message}`, 'error');
+        }
+        updateSubmitButtonText();
+    }
+
+    async function runQuery() {
+        let question = questionInput.value.trim();
+        let displayQuestion = question;
+
+        if (!question && pendingTimeRefinement && lastTimeMeta.enabled) {
+            question = buildRefinementQuestion();
+            displayQuestion = `再次提问：${lastTimeMeta.dimension}调整为 ${formatTimeRangeDisplay(timeRangeStartEl.value, lastTimeMeta.granularity)} 到 ${formatTimeRangeDisplay(timeRangeEndEl.value, lastTimeMeta.granularity)}`;
+        }
+
+        if (!question) {
+            setStatus('请先输入问题，或选择新的时间范围后再次提问', 'error');
+            return;
+        }
+
+        addMessage('user', displayQuestion);
+        questionInput.value = '';
+        submitBtn.disabled = true;
+        newConversationBtn.disabled = true;
+        updateSubmitButtonText();
+        persistLlmProvider(llmProviderSelect.value);
+        setStatus(`正在使用 ${llmProviderSelect.options[llmProviderSelect.selectedIndex].text} 理解上下文、生成 SQL 并执行，请稍候...`);
+
+        try {
+            const response = await fetch('/api/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question,
+                    conversation_id: conversationId,
+                    llm_provider: llmProviderSelect.value,
+                })
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            conversationId = data.conversation_id || conversationId;
+            persistConversationId();
+            if (data.llm_provider) {
+                llmProviderSelect.value = data.llm_provider;
+                persistLlmProvider(data.llm_provider);
+            }
+
+            if (data.reply_type === 'clarify') {
+                addMessage('assistant', data.assistant_message || '请补充更多信息。');
+                setStatus(`需要你补充信息后再继续执行（引擎：${data.llm_provider_label || data.llm_provider} / 模型：${data.model}）`);
+                return;
+            }
+
+            applyResultPayload(data);
+            setStatus(`执行成功，返回 ${data.row_count} 行（引擎：${data.llm_provider_label || data.llm_provider} / 模型：${data.model}）`, 'ok');
+        } catch (error) {
+            addMessage('assistant', `执行失败：${error.message}`);
+            setStatus(`执行失败：${error.message}`, 'error');
+        } finally {
+            submitBtn.disabled = false;
+            newConversationBtn.disabled = false;
+            updateSubmitButtonText();
+        }
+    }
+
+    submitBtn.addEventListener('click', runQuery);
+    newConversationBtn.addEventListener('click', resetConversation);
+    questionInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            runQuery();
+        }
+    });
+    questionInput.addEventListener('input', updateSubmitButtonText);
+    llmProviderSelect.addEventListener('change', event => {
+        persistLlmProvider(event.target.value);
+    });
+    timeRangeStartEl.addEventListener('change', onTimeRangeChange);
+    timeRangeEndEl.addEventListener('change', onTimeRangeChange);
+    tableViewBtn.addEventListener('click', () => switchView('list'));
+    barViewBtn.addEventListener('click', () => switchView('bar'));
+    pieViewBtn.addEventListener('click', () => switchView('pie'));
+
+    restoreConversation();
+</script>
+</body>
+</html>
