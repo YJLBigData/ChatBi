@@ -13,6 +13,7 @@
 - 自动建表并生成 10 万级以上模拟数据
 - 支持连续对话、澄清追问和日期范围再次提问
 - 会话持久化到 MySQL，服务重启后仍可继续追问
+- 上下文采用 `滚动摘要 + 最近窗口` 压缩策略，并在页面右下角展示压缩量与剩余额度
 - 使用数据库驱动的语义层和候选表召回，不再把全量 schema 直接塞给模型
 - 候选召回采用 规则 + 全文索引 + 向量 embedding 混合召回
 - 提供本地语义层后台维护页，可维护业务域、业务表、指标、维度、关联关系、同义词和问法示例
@@ -46,6 +47,13 @@ cp .env.example .env
 - `DASHSCOPE_EMBEDDING_MODEL`
 - `MAX_HISTORY_MESSAGES`
 - `MAX_UI_HISTORY_MESSAGES`
+- `MAX_CONTEXT_SOURCE_MESSAGES`
+- `MAX_CONTEXT_RECENT_MESSAGES`
+- `CONTEXT_COMPRESSION_TRIGGER_MESSAGES`
+- `CONTEXT_COMPRESSION_TRIGGER_TOKENS`
+- `MAX_CONTEXT_SUMMARY_LINES`
+- `LLM_REQUEST_TIMEOUT_SECONDS`
+- `QUERY_TIMEOUT_MS`
 - `SEMANTIC_FULLTEXT_TOPK`
 - `SEMANTIC_VECTOR_TOPK`
 
@@ -102,9 +110,11 @@ python app.py
 页面能力：
 - `Enter` 直接发送，`Shift + Enter` 换行
 - 页面可切换 `阿里百炼 / DeepSeek` 引擎
+- 点击 `语义层维护` 会在新标签页打开，不影响当前对话和结果保留
 - 如果结果适合图表，可切换到柱图或饼图
 - 如果问题包含日期 / 月份 / 周范围，结果返回后可以直接调整范围并再次提问
 - 页面刷新后会自动恢复最近一次会话和结果快照
+- 页面右下角会显示上下文压缩量和当前模型剩余额度，鼠标悬停可查看详情
 
 ## 6. 语义层维护
 

@@ -383,6 +383,80 @@
             font-size: 13px;
         }
 
+        .context-indicator {
+            position: fixed;
+            right: 22px;
+            bottom: 22px;
+            z-index: 20;
+        }
+
+        .context-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 88px;
+            padding: 8px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(31, 111, 235, 0.16);
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+            color: var(--text);
+            cursor: default;
+        }
+
+        .context-badge.warn {
+            border-color: rgba(198, 40, 40, 0.24);
+        }
+
+        .context-badge-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--primary-soft);
+            color: var(--primary);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .context-badge-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            line-height: 1;
+        }
+
+        .context-badge-text strong,
+        .context-badge-text span {
+            font-size: 11px;
+        }
+
+        .context-tooltip {
+            position: absolute;
+            right: 0;
+            bottom: 52px;
+            display: none;
+            width: 280px;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: rgba(15, 23, 42, 0.96);
+            color: #f8fafc;
+            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.28);
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-line;
+        }
+
+        .context-indicator:hover .context-tooltip,
+        .context-indicator:focus-within .context-tooltip {
+            display: block;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 16px;
@@ -431,7 +505,7 @@
         <div class="actions">
             <button id="submitBtn">发送问题</button>
             <button id="newConversationBtn" class="secondary-btn">新对话</button>
-            <a id="semanticAdminBtn" class="secondary-btn" href="/admin/semantic">语义层维护</a>
+            <a id="semanticAdminBtn" class="secondary-btn" href="/admin/semantic" target="_blank" rel="noopener noreferrer">语义层维护</a>
         </div>
         <div id="status" class="status">等待输入问题...</div>
     </div>
@@ -476,6 +550,18 @@
         <pre id="sqlBox">-- 暂无 SQL</pre>
     </div>
 </div>
+<div id="contextIndicator" class="context-indicator">
+    <div id="contextBadge" class="context-badge" tabindex="0" aria-label="上下文使用状态">
+        <span class="context-badge-icon">CTX</span>
+        <span class="context-badge-text">
+            <strong id="contextCompressionText">压0%</strong>
+            <span id="contextRemainingText">余100%</span>
+        </span>
+    </div>
+    <div id="contextTooltip" class="context-tooltip">上下文策略：滚动摘要 + 最近窗口
+压缩量：0%
+剩余额度：100%</div>
+</div>
 
 <script>
     const submitBtn = document.getElementById('submitBtn');
@@ -500,6 +586,10 @@
     const timeRangeStartEl = document.getElementById('timeRangeStart');
     const timeRangeEndEl = document.getElementById('timeRangeEnd');
     const llmProviderSelect = document.getElementById('llmProvider');
+    const contextBadgeEl = document.getElementById('contextBadge');
+    const contextCompressionTextEl = document.getElementById('contextCompressionText');
+    const contextRemainingTextEl = document.getElementById('contextRemainingText');
+    const contextTooltipEl = document.getElementById('contextTooltip');
 
     const CHART_COLORS = ['#1f6feb', '#0ea5e9', '#0a7f47', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#84cc16', '#e11d48', '#06b6d4', '#4f46e5'];
     const CONVERSATION_STORAGE_KEY = 'chatbi_conversation_id';
@@ -525,6 +615,22 @@
     };
     let pendingTimeRefinement = false;
 
+    function buildDefaultContextStats() {
+        return {
+            strategy_label: '滚动摘要 + 最近窗口',
+            llm_provider_label: llmProviderSelect.options[llmProviderSelect.selectedIndex]?.text || '',
+            max_input_tokens: 0,
+            estimated_prompt_tokens: 0,
+            remaining_tokens: 0,
+            remaining_ratio: 1,
+            source_message_count: 0,
+            recent_message_count: 0,
+            summarized_message_count: 0,
+            saved_tokens: 0,
+            compression_ratio: 0,
+        };
+    }
+
     function createConversationId() {
         return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     }
@@ -548,6 +654,33 @@
     function setStatus(text, type) {
         statusEl.textContent = text;
         statusEl.className = `status ${type || ''}`;
+    }
+
+    function toPercent(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return 0;
+        return Math.max(0, Math.min(100, Math.round(num * 100)));
+    }
+
+    function updateContextIndicator(rawStats) {
+        const stats = rawStats || buildDefaultContextStats();
+        const compressionPct = toPercent(stats.compression_ratio);
+        const remainingPct = stats.max_input_tokens ? toPercent(stats.remaining_ratio) : 100;
+        contextCompressionTextEl.textContent = `压${compressionPct}%`;
+        contextRemainingTextEl.textContent = `余${remainingPct}%`;
+        contextBadgeEl.classList.toggle('warn', remainingPct <= 15);
+        contextTooltipEl.textContent = [
+            `上下文策略：${stats.strategy_label || '滚动摘要 + 最近窗口'}`,
+            `压缩量：${compressionPct}%`,
+            `剩余额度：${remainingPct}%`,
+            `原始消息数：${stats.source_message_count || 0}`,
+            `摘要消息数：${stats.summarized_message_count || 0}`,
+            `保留最近消息数：${stats.recent_message_count || 0}`,
+            `估算输入 tokens：${stats.estimated_prompt_tokens || 0}`,
+            `估算剩余 tokens：${stats.remaining_tokens || 0}`,
+            `当前引擎：${stats.llm_provider_label || (llmProviderSelect.options[llmProviderSelect.selectedIndex]?.text || '--')}`,
+            `${stats.summary_updated ? '本轮摘要已更新' : '本轮未触发新的摘要更新'}`,
+        ].join('\n');
     }
 
     function updateSubmitButtonText() {
@@ -629,6 +762,7 @@
         sqlBox.textContent = '-- 暂无 SQL';
         resetResultState();
         hideTimeRange();
+        updateContextIndicator(null);
     }
 
     function setViewButtonState(button, enabled, active) {
@@ -929,6 +1063,7 @@
         );
         currentResultState.activeView = 'list';
         renderActiveView();
+        updateContextIndicator(data.context_stats);
 
         showTimeRange({
             dimension: data.time_dimension || '',
@@ -956,7 +1091,7 @@
         resetPanels();
         try {
             const response = await fetch(`/api/conversation/${encodeURIComponent(conversationId)}`);
-            const data = await response.json();
+            const data = await readJsonResponse(response);
             if (!response.ok) {
                 throw new Error(data.error || '恢复会话失败');
             }
@@ -975,6 +1110,7 @@
                 applyResultPayload(data.latest_result, { appendAssistantMessage: false });
                 setStatus('已恢复上一次会话', 'ok');
             } else {
+                updateContextIndicator(data.context_stats);
                 setStatus('已恢复会话');
             }
         } catch (error) {
@@ -984,6 +1120,18 @@
             setStatus(`恢复历史会话失败：${error.message}`, 'error');
         }
         updateSubmitButtonText();
+    }
+
+    async function readJsonResponse(response) {
+        const rawText = await response.text();
+        if (!rawText) {
+            return {};
+        }
+        try {
+            return JSON.parse(rawText);
+        } catch (error) {
+            throw new Error(`服务返回了非 JSON 内容：${rawText.slice(0, 160)}`);
+        }
     }
 
     async function runQuery() {
@@ -1018,7 +1166,7 @@
                     llm_provider: llmProviderSelect.value,
                 })
             });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (!response.ok) {
                 throw new Error(data.error || '请求失败');
@@ -1033,6 +1181,7 @@
 
             if (data.reply_type === 'clarify') {
                 addMessage('assistant', data.assistant_message || '请补充更多信息。');
+                updateContextIndicator(data.context_stats);
                 setStatus(`需要你补充信息后再继续执行（引擎：${data.llm_provider_label || data.llm_provider} / 模型：${data.model}）`);
                 return;
             }
@@ -1060,6 +1209,9 @@
     questionInput.addEventListener('input', updateSubmitButtonText);
     llmProviderSelect.addEventListener('change', event => {
         persistLlmProvider(event.target.value);
+        if (!currentResultState.rows.length) {
+            updateContextIndicator(null);
+        }
     });
     timeRangeStartEl.addEventListener('change', onTimeRangeChange);
     timeRangeEndEl.addEventListener('change', onTimeRangeChange);
