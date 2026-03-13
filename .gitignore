@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .env
 .idea/
+report_templates/*
+!report_templates/default_management_report_template.docx

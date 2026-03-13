@@ -142,6 +142,47 @@
             outline: none;
         }
 
+        .report-toolbar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            align-items: end;
+        }
+
+        .toolbar-field {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toolbar-field label {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .toolbar-field select,
+        .toolbar-field input {
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            font-size: 14px;
+            background: #fff;
+            outline: none;
+        }
+
+        .report-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+
+        .toolbar-tip {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
         .actions {
             display: flex;
             gap: 10px;
@@ -549,6 +590,25 @@
         <h3>生成 SQL</h3>
         <pre id="sqlBox">-- 暂无 SQL</pre>
     </div>
+
+    <div class="card">
+        <h3>导出与报告</h3>
+        <div class="report-toolbar">
+            <div class="toolbar-field">
+                <label for="reportTemplateSelect">报告模板</label>
+                <select id="reportTemplateSelect"></select>
+            </div>
+        </div>
+        <div class="report-actions">
+            <button id="downloadDataBtn" class="secondary-btn" disabled>下载明细数据</button>
+            <button id="downloadChartWordBtn" class="secondary-btn" disabled>下载图表Word</button>
+            <button id="generateReportBtn" disabled>生成商业报告</button>
+            <button id="downloadTemplateSampleBtn" class="secondary-btn">下载模板样例</button>
+            <button id="uploadTemplateBtn" class="secondary-btn">上传自定义模板</button>
+        </div>
+        <div class="toolbar-tip">支持上传 .docx 报告模板样例文件。系统会自动解析标题、正文、列表和表格样式，并据此生成商业分析报告。</div>
+        <input id="reportTemplateFileInput" type="file" accept=".docx" hidden>
+    </div>
 </div>
 <div id="contextIndicator" class="context-indicator">
     <div id="contextBadge" class="context-badge" tabindex="0" aria-label="上下文使用状态">
@@ -586,6 +646,13 @@
     const timeRangeStartEl = document.getElementById('timeRangeStart');
     const timeRangeEndEl = document.getElementById('timeRangeEnd');
     const llmProviderSelect = document.getElementById('llmProvider');
+    const reportTemplateSelect = document.getElementById('reportTemplateSelect');
+    const downloadDataBtn = document.getElementById('downloadDataBtn');
+    const downloadChartWordBtn = document.getElementById('downloadChartWordBtn');
+    const generateReportBtn = document.getElementById('generateReportBtn');
+    const downloadTemplateSampleBtn = document.getElementById('downloadTemplateSampleBtn');
+    const uploadTemplateBtn = document.getElementById('uploadTemplateBtn');
+    const reportTemplateFileInput = document.getElementById('reportTemplateFileInput');
     const contextBadgeEl = document.getElementById('contextBadge');
     const contextCompressionTextEl = document.getElementById('contextCompressionText');
     const contextRemainingTextEl = document.getElementById('contextRemainingText');
@@ -614,6 +681,7 @@
         end: '',
     };
     let pendingTimeRefinement = false;
+    let reportTemplates = [];
 
     function buildDefaultContextStats() {
         return {
@@ -681,6 +749,56 @@
             `当前引擎：${stats.llm_provider_label || (llmProviderSelect.options[llmProviderSelect.selectedIndex]?.text || '--')}`,
             `${stats.summary_updated ? '本轮摘要已更新' : '本轮未触发新的摘要更新'}`,
         ].join('\n');
+    }
+
+    function getSelectedTemplateId() {
+        return reportTemplateSelect.value || '';
+    }
+
+    function syncReportTemplateOptions(templates, preferredId) {
+        reportTemplates = Array.isArray(templates) ? templates : [];
+        reportTemplateSelect.innerHTML = '';
+        if (!reportTemplates.length) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = '默认模板';
+            reportTemplateSelect.appendChild(option);
+            return;
+        }
+
+        reportTemplates.forEach(template => {
+            const option = document.createElement('option');
+            option.value = template.template_id;
+            option.textContent = template.is_default
+                ? `${template.template_name}（默认）`
+                : template.template_name;
+            reportTemplateSelect.appendChild(option);
+        });
+
+        const templateIds = new Set(reportTemplates.map(item => item.template_id));
+        if (preferredId && templateIds.has(preferredId)) {
+            reportTemplateSelect.value = preferredId;
+            return;
+        }
+        const defaultTemplate = reportTemplates.find(item => item.is_default) || reportTemplates[0];
+        if (defaultTemplate) {
+            reportTemplateSelect.value = defaultTemplate.template_id;
+        }
+    }
+
+    function hasResultRows() {
+        return Array.isArray(currentResultState.rows) && currentResultState.rows.length > 0;
+    }
+
+    function hasChartExport() {
+        return !!currentResultState.chartItems && currentResultState.chartItems.length > 0;
+    }
+
+    function updateExportButtons() {
+        const hasRows = hasResultRows();
+        downloadDataBtn.disabled = !hasRows;
+        generateReportBtn.disabled = !hasRows || !getSelectedTemplateId();
+        downloadChartWordBtn.disabled = !hasRows || !hasChartExport() || !getSelectedTemplateId();
     }
 
     function updateSubmitButtonText() {
@@ -763,6 +881,7 @@
         resetResultState();
         hideTimeRange();
         updateContextIndicator(null);
+        updateExportButtons();
     }
 
     function setViewButtonState(button, enabled, active) {
@@ -1064,6 +1183,7 @@
         currentResultState.activeView = 'list';
         renderActiveView();
         updateContextIndicator(data.context_stats);
+        updateExportButtons();
 
         showTimeRange({
             dimension: data.time_dimension || '',
@@ -1082,6 +1202,7 @@
         addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
         setStatus('已开启新对话');
         updateSubmitButtonText();
+        updateExportButtons();
     }
 
     async function restoreConversation() {
@@ -1120,6 +1241,7 @@
             setStatus(`恢复历史会话失败：${error.message}`, 'error');
         }
         updateSubmitButtonText();
+        updateExportButtons();
     }
 
     async function readJsonResponse(response) {
@@ -1132,6 +1254,253 @@
         } catch (error) {
             throw new Error(`服务返回了非 JSON 内容：${rawText.slice(0, 160)}`);
         }
+    }
+
+    async function readBlobResponse(response) {
+        if (response.ok) {
+            return response.blob();
+        }
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const payload = await response.json();
+            throw new Error(payload.error || '文件导出失败');
+        }
+        const rawText = await response.text();
+        throw new Error(rawText || '文件导出失败');
+    }
+
+    function parseFileNameFromHeaders(response, fallbackName) {
+        const disposition = response.headers.get('content-disposition') || '';
+        const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match) {
+            return decodeURIComponent(utf8Match[1]);
+        }
+        const plainMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+        if (plainMatch) {
+            return plainMatch[1];
+        }
+        return fallbackName;
+    }
+
+    async function saveBlobWithPicker(blob, suggestedName, acceptConfig) {
+        if ('showSaveFilePicker' in window) {
+            const handle = await window.showSaveFilePicker({
+                suggestedName,
+                types: acceptConfig ? [acceptConfig] : undefined,
+            });
+            const writable = await handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = suggestedName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    function extractSvgMarkup(html) {
+        const match = String(html || '').match(/<svg[\s\S]*<\/svg>/i);
+        return match ? match[0] : '';
+    }
+
+    function parseViewBox(svgMarkup) {
+        const match = String(svgMarkup).match(/viewBox=\"([^\"]+)\"/i);
+        if (!match) {
+            return { width: 1200, height: 720 };
+        }
+        const parts = match[1].trim().split(/\s+/).map(Number);
+        if (parts.length !== 4 || parts.some(value => !Number.isFinite(value))) {
+            return { width: 1200, height: 720 };
+        }
+        return { width: parts[2], height: parts[3] };
+    }
+
+    async function svgMarkupToPngDataUrl(svgMarkup) {
+        if (!svgMarkup) {
+            return '';
+        }
+        const { width, height } = parseViewBox(svgMarkup);
+        const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+        try {
+            const image = await new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error('图表图片转换失败'));
+                img.src = url;
+            });
+            const canvas = document.createElement('canvas');
+            canvas.width = width * 2;
+            canvas.height = height * 2;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/png');
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    }
+
+    async function buildChartImagesPayload() {
+        if (!currentResultState.chartItems || !currentResultState.chartItems.length) {
+            return [];
+        }
+
+        const charts = [];
+        const barHtml = renderBarChart(currentResultState.chartItems, currentResultState.chartTitle || '查询结果');
+        const barSvg = extractSvgMarkup(barHtml);
+        if (barSvg) {
+            const barPng = await svgMarkupToPngDataUrl(barSvg);
+            if (barPng) {
+                charts.push({
+                    title: `${currentResultState.chartTitle || '查询结果'} - 柱图`,
+                    caption: '柱图快照由当前查询结果自动生成。',
+                    png_data_url: barPng,
+                });
+            }
+        }
+
+        const pieSum = currentResultState.chartItems.reduce((sum, item) => sum + item.value, 0);
+        if (pieSum > 0) {
+            const pieHtml = renderPieChart(currentResultState.chartItems, currentResultState.chartTitle || '查询结果');
+            const pieSvg = extractSvgMarkup(pieHtml);
+            if (pieSvg) {
+                const piePng = await svgMarkupToPngDataUrl(pieSvg);
+                if (piePng) {
+                    charts.push({
+                        title: `${currentResultState.chartTitle || '查询结果'} - 饼图`,
+                        caption: '饼图快照由当前查询结果自动生成。',
+                        png_data_url: piePng,
+                    });
+                }
+            }
+        }
+        return charts;
+    }
+
+    async function loadReportTemplates(preferredTemplateId) {
+        const response = await fetch('/api/report/templates');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '加载报告模板失败');
+        }
+        syncReportTemplateOptions(data.templates || [], preferredTemplateId || data.default_template_id);
+        updateExportButtons();
+    }
+
+    async function uploadReportTemplate(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/report/templates/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '上传报告模板失败');
+        }
+        syncReportTemplateOptions(data.templates || [], data.template?.template_id);
+        updateExportButtons();
+    }
+
+    async function exportFile(url, payload, fallbackName, acceptConfig, successMessage) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const blob = await readBlobResponse(response);
+        const fileName = parseFileNameFromHeaders(response, fallbackName);
+        await saveBlobWithPicker(blob, fileName, acceptConfig);
+        setStatus(successMessage, 'ok');
+    }
+
+    async function downloadDetailData() {
+        if (!hasResultRows()) {
+            setStatus('当前没有可下载的明细数据', 'error');
+            return;
+        }
+        setStatus('正在准备明细数据导出，请选择保存位置...');
+        await exportFile(
+            '/api/export/data',
+            { conversation_id: conversationId },
+            'chatbi_detail.csv',
+            {
+                description: 'CSV 文件',
+                accept: { 'text/csv': ['.csv'] },
+            },
+            '明细数据已导出'
+        );
+    }
+
+    async function downloadChartWord() {
+        if (!hasChartExport()) {
+            setStatus('当前结果不适合生成图表快照', 'error');
+            return;
+        }
+        setStatus('正在准备图表 Word，请选择保存位置...');
+        const chartImages = await buildChartImagesPayload();
+        await exportFile(
+            '/api/export/chart-word',
+            {
+                conversation_id: conversationId,
+                template_id: getSelectedTemplateId(),
+                chart_images: chartImages,
+            },
+            'chart_snapshot.docx',
+            {
+                description: 'Word 文档',
+                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+            },
+            '图表 Word 已导出'
+        );
+    }
+
+    async function generateReportDocument() {
+        if (!hasResultRows()) {
+            setStatus('当前没有可生成报告的查询结果', 'error');
+            return;
+        }
+        setStatus('正在调用模型生成商业分析报告，请选择保存位置...');
+        const chartImages = await buildChartImagesPayload();
+        await exportFile(
+            '/api/report/generate',
+            {
+                conversation_id: conversationId,
+                template_id: getSelectedTemplateId(),
+                llm_provider: llmProviderSelect.value,
+                chart_images: chartImages,
+            },
+            'business_report.docx',
+            {
+                description: 'Word 文档',
+                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+            },
+            '商业分析报告已生成'
+        );
+    }
+
+    async function downloadTemplateSample() {
+        const templateId = getSelectedTemplateId();
+        const response = await fetch(`/api/report/templates/${encodeURIComponent(templateId || '')}/sample`);
+        const blob = await readBlobResponse(response);
+        const fileName = parseFileNameFromHeaders(response, 'report_template_sample.docx');
+        await saveBlobWithPicker(
+            blob,
+            fileName,
+            {
+                description: 'Word 模板样例',
+                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+            }
+        );
+        setStatus('报告模板样例已下载', 'ok');
     }
 
     async function runQuery() {
@@ -1200,6 +1569,42 @@
 
     submitBtn.addEventListener('click', runQuery);
     newConversationBtn.addEventListener('click', resetConversation);
+    downloadDataBtn.addEventListener('click', () => {
+        downloadDetailData().catch(error => {
+            setStatus(`明细导出失败：${error.message}`, 'error');
+        });
+    });
+    downloadChartWordBtn.addEventListener('click', () => {
+        downloadChartWord().catch(error => {
+            setStatus(`图表导出失败：${error.message}`, 'error');
+        });
+    });
+    generateReportBtn.addEventListener('click', () => {
+        generateReportDocument().catch(error => {
+            setStatus(`报告生成失败：${error.message}`, 'error');
+        });
+    });
+    downloadTemplateSampleBtn.addEventListener('click', () => {
+        downloadTemplateSample().catch(error => {
+            setStatus(`模板下载失败：${error.message}`, 'error');
+        });
+    });
+    uploadTemplateBtn.addEventListener('click', () => {
+        reportTemplateFileInput.click();
+    });
+    reportTemplateFileInput.addEventListener('change', event => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) {
+            return;
+        }
+        setStatus('正在上传并解析报告模板...');
+        uploadReportTemplate(file)
+            .then(() => setStatus('报告模板上传成功，已自动解析样式', 'ok'))
+            .catch(error => setStatus(`模板上传失败：${error.message}`, 'error'))
+            .finally(() => {
+                reportTemplateFileInput.value = '';
+            });
+    });
     questionInput.addEventListener('keydown', event => {
         if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
@@ -1213,13 +1618,23 @@
             updateContextIndicator(null);
         }
     });
+    reportTemplateSelect.addEventListener('change', updateExportButtons);
     timeRangeStartEl.addEventListener('change', onTimeRangeChange);
     timeRangeEndEl.addEventListener('change', onTimeRangeChange);
     tableViewBtn.addEventListener('click', () => switchView('list'));
     barViewBtn.addEventListener('click', () => switchView('bar'));
     pieViewBtn.addEventListener('click', () => switchView('pie'));
 
-    restoreConversation();
+    async function bootstrapPage() {
+        try {
+            await loadReportTemplates();
+        } catch (error) {
+            setStatus(`加载报告模板失败：${error.message}`, 'error');
+        }
+        await restoreConversation();
+    }
+
+    bootstrapPage();
 </script>
 </body>
 </html>

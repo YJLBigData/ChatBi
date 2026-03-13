@@ -20,6 +20,8 @@
 - 支持在 `阿里百炼 / DeepSeek` 之间切换模型引擎，并调用对应模型自动生成 SQL
 - 执行 SQL 并返回指标定义、指标描述、维度、指标、结果数据
 - 结果支持列表 / 柱图 / 饼图切换展示
+- 支持下载当前查询明细数据 CSV，并可导出图表快照 Word
+- 支持生成管理层商业分析报告 Word，默认提供专业报告模板，并支持上传自定义 `.docx` 模板样例解析样式
 
 ## 1. 环境准备
 
@@ -54,6 +56,7 @@ cp .env.example .env
 - `MAX_CONTEXT_SUMMARY_LINES`
 - `LLM_REQUEST_TIMEOUT_SECONDS`
 - `QUERY_TIMEOUT_MS`
+- `REPORT_PREVIEW_MAX_ROWS`
 - `SEMANTIC_FULLTEXT_TOPK`
 - `SEMANTIC_VECTOR_TOPK`
 
@@ -87,6 +90,12 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 - `semantic_example`
 - `semantic_search_doc`
 
+报告模板表也会自动创建并初始化：
+- `report_template`
+
+默认报告模板样例文件：
+- `report_templates/default_management_report_template.docx`
+
 ## 4. 启动服务
 
 ```bash
@@ -115,6 +124,16 @@ python app.py
 - 如果问题包含日期 / 月份 / 周范围，结果返回后可以直接调整范围并再次提问
 - 页面刷新后会自动恢复最近一次会话和结果快照
 - 页面右下角会显示上下文压缩量和当前模型剩余额度，鼠标悬停可查看详情
+- 支持下载当前结果的明细 CSV，浏览器会优先弹出保存位置选择
+- 支持下载图表快照 Word，自动嵌入当前图表和结果表
+- 支持生成商业分析报告 Word，自动嵌入看板快照、关键发现、专业分析、策略建议和行动计划
+- 支持上传自定义 `.docx` 报告模板样例，系统会自动解析标题、正文、列表和表格样式
+
+导出与报告建议：
+- 先执行查询，再使用 `下载明细数据`
+- 如果当前结果支持图表，可使用 `下载图表Word`
+- 如需管理层汇报材料，可使用 `生成商业报告`
+- 如需自定义版式，先上传 `.docx` 模板样例，再生成报告
 
 ## 6. 语义层维护
 

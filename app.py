@@ -2,14 +2,25 @@ import json
 import math
 import os
 import re
+from io import BytesIO
 from datetime import date
 from typing import Any
 
 import pymysql
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from openai import OpenAI
 
+from reporting import (
+    DEFAULT_TEMPLATE_ID,
+    build_chart_word_bytes,
+    build_csv_bytes,
+    build_management_report_docx,
+    ensure_reporting_runtime,
+    get_report_template,
+    list_report_templates,
+    save_uploaded_template,
+)
 from semantic_layer import (
     ensure_semantic_runtime,
     get_admin_bootstrap,
@@ -62,6 +73,7 @@ MAX_CONTEXT_SUMMARY_LINES = int(os.getenv("MAX_CONTEXT_SUMMARY_LINES", "10"))
 QUERY_TIMEOUT_MS = int(os.getenv("QUERY_TIMEOUT_MS", "15000"))
 MAX_CONVERSATION_ID_LENGTH = int(os.getenv("MAX_CONVERSATION_ID_LENGTH", "80"))
 LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "90"))
+REPORT_PREVIEW_MAX_ROWS = int(os.getenv("REPORT_PREVIEW_MAX_ROWS", "12"))
 ALLOWED_BASE_TABLES = {
     "order_master",
     "order_detail",
@@ -262,6 +274,7 @@ def ensure_runtime_ready() -> None:
                 cursor.execute(CHAT_MESSAGE_DDL)
                 ensure_table_columns(cursor, "chat_session", CHAT_SESSION_MIGRATIONS)
                 ensure_table_columns(cursor, "chat_message", CHAT_MESSAGE_MIGRATIONS)
+                ensure_reporting_runtime(conn)
             conn.commit()
             ensure_semantic_runtime(refresh_embeddings=False)
         finally:
@@ -595,6 +608,160 @@ def get_latest_result(conversation_id: str) -> dict[str, Any] | None:
     if not normalized.get("context_stats"):
         normalized["context_stats"] = normalize_context_stats(row.get("context_stats_json"), normalized.get("llm_provider"))
     return normalized
+
+
+def get_latest_result_or_raise(conversation_id: str) -> dict[str, Any]:
+    latest_result = get_latest_result(conversation_id)
+    if not latest_result:
+        raise ValueError("当前会话还没有可导出的查询结果，请先执行查询")
+    if latest_result.get("reply_type") != "result":
+        raise ValueError("当前会话最近一次返回不是查询结果，暂时无法导出")
+    return latest_result
+
+
+def sanitize_filename_component(text: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", str(text or "").strip())
+    cleaned = cleaned.strip("_")
+    return cleaned[:80] or fallback
+
+
+def build_download_name(prefix: str, latest_result: dict[str, Any], suffix: str) -> str:
+    metric_name = sanitize_filename_component(latest_result.get("metric_definition") or latest_result.get("chart_title"), "chatbi")
+    conversation_name = sanitize_filename_component(latest_result.get("conversation_id"), "conversation")
+    timestamp = date.today().strftime("%Y%m%d")
+    return f"{prefix}_{metric_name}_{conversation_name}_{timestamp}.{suffix}"
+
+
+def normalize_chart_images(raw_items: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_items, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        png_data_url = str(item.get("png_data_url", "")).strip()
+        if not png_data_url.startswith("data:image/png;base64,"):
+            continue
+        normalized.append(
+            {
+                "title": str(item.get("title", "图表快照")).strip() or "图表快照",
+                "caption": str(item.get("caption", "")).strip(),
+                "png_data_url": png_data_url,
+            }
+        )
+    return normalized
+
+
+def build_rows_preview(rows: list[dict[str, Any]], columns: list[str], max_rows: int = REPORT_PREVIEW_MAX_ROWS) -> str:
+    preview_rows = []
+    for row in rows[:max_rows]:
+        preview_rows.append({column: row.get(column) for column in columns})
+    return json.dumps(preview_rows, ensure_ascii=False)
+
+
+def generate_report_content_by_llm(
+    conversation_id: str,
+    latest_result: dict[str, Any],
+    llm_provider: str,
+) -> dict[str, Any]:
+    llm_runtime = get_llm_runtime(llm_provider)
+    client = llm_runtime["client"]
+    session_row = get_chat_session_row(conversation_id) or {}
+    history_records = get_conversation_history_records(conversation_id, MAX_CONTEXT_SOURCE_MESSAGES)
+    context_bundle = build_context_bundle(conversation_id, history_records, llm_provider)
+    rows = latest_result.get("rows", []) or []
+    columns = latest_result.get("columns", []) or []
+    preview_text = build_rows_preview(rows, columns)
+    system_prompt = (
+        "你是资深商业分析总监，面向管理层撰写经营分析报告。"
+        "请结合当前问题、指标口径、数据结果、上下文摘要，输出一份可直接发给管理层的专业商业分析报告。"
+        "报告必须具备清晰结论、专业分析、经营策略、管理动作和风险提示。"
+        "只输出 JSON，不要 Markdown，不要解释。"
+        "JSON 字段固定为："
+        "report_title, report_subtitle, executive_summary, management_summary, key_findings, professional_analysis, strategy_recommendations, management_actions, risk_watchouts, appendix_note。"
+        "要求："
+        "1) key_findings 为 3-6 条字符串数组；"
+        "2) professional_analysis 为 2-4 个对象数组，每个对象包含 title 和 content；"
+        "3) strategy_recommendations 为 3-6 条可执行策略建议；"
+        "4) management_actions 为 3-6 条面向管理层的落地动作；"
+        "5) risk_watchouts 为 2-5 条风险提示；"
+        "6) 语言必须专业、克制、可执行；"
+        "7) 如果数据行数较少，要明确说明分析边界，不要臆造结论。"
+    )
+    user_prompt = (
+        f"当前问题：{latest_result.get('question', '--')}\n"
+        f"指标定义：{latest_result.get('metric_definition', '--')}\n"
+        f"指标描述：{latest_result.get('metric_description', '--')}\n"
+        f"维度：{'、'.join(latest_result.get('dimensions', [])) or '整体汇总'}\n"
+        f"指标：{'、'.join(latest_result.get('metrics', [])) or '--'}\n"
+        f"返回行数：{latest_result.get('row_count', 0)}\n"
+        f"图表标题：{latest_result.get('chart_title', '--')}\n"
+        f"生成 SQL：{latest_result.get('generated_sql', '--')}\n"
+        f"上下文摘要：\n{session_row.get('context_summary') or context_bundle['history_text']}\n\n"
+        f"结果样本（最多前{REPORT_PREVIEW_MAX_ROWS}行）：\n{preview_text}"
+    )
+    completion = client.chat.completions.create(
+        model=llm_runtime["model"],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.2,
+    )
+    payload = extract_json_payload(completion.choices[0].message.content or "")
+    return normalize_report_payload(payload, latest_result)
+
+
+def normalize_report_payload(payload: dict[str, Any], latest_result: dict[str, Any]) -> dict[str, Any]:
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result
+
+    analysis_sections = []
+    for item in payload.get("professional_analysis", []) if isinstance(payload.get("professional_analysis"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if title or content:
+            analysis_sections.append({"title": title or "专业分析", "content": content})
+
+    fallback_metric = latest_result.get("metric_definition", "经营指标分析")
+    dimensions_text = "、".join(latest_result.get("dimensions", [])) or "整体汇总"
+    metrics_text = "、".join(latest_result.get("metrics", [])) or "核心指标"
+    rows = latest_result.get("rows", []) or []
+    top_row_text = ""
+    if rows:
+        top_row = rows[0]
+        top_row_text = "；".join(f"{key}={top_row.get(key, '')}" for key in list(top_row.keys())[:4])
+
+    return {
+        "report_title": str(payload.get("report_title", "")).strip() or f"{fallback_metric}商业分析报告",
+        "report_subtitle": str(payload.get("report_subtitle", "")).strip()
+        or f"围绕 {dimensions_text} 对 {metrics_text} 进行经营复盘与策略分析",
+        "executive_summary": str(payload.get("executive_summary", "")).strip()
+        or f"本报告围绕 {fallback_metric} 展开，当前结果共返回 {latest_result.get('row_count', 0)} 行数据，建议管理层优先关注业务表现差异、结构变化与执行动作。",
+        "management_summary": str(payload.get("management_summary", "")).strip()
+        or f"从当前结果看，经营决策应围绕 {metrics_text} 与 {dimensions_text} 的结构性差异推进，重点关注头部表现与尾部改进空间。",
+        "key_findings": _string_list(payload.get("key_findings"))
+        or [f"当前分析围绕 {fallback_metric} 展开。", f"结果重点维度为 {dimensions_text}。", f"结果样本首行摘要：{top_row_text or '暂无样本行'}。"],
+        "professional_analysis": analysis_sections
+        or [{"title": "业务结构分析", "content": f"当前分析主要围绕 {dimensions_text} 下的 {metrics_text} 变化展开，建议结合业务域和时间窗口继续跟踪结构差异。"}],
+        "strategy_recommendations": _string_list(payload.get("strategy_recommendations"))
+        or [f"围绕 {metrics_text} 建立分层经营策略。", f"针对 {dimensions_text} 维度识别高潜与低效单元，差异化配置资源。", "将关键指标纳入周/月度经营看板进行连续跟踪。"],
+        "management_actions": _string_list(payload.get("management_actions"))
+        or ["明确责任人和目标值。", "补充明细拆解并形成专项复盘。", "将改进动作纳入下一周期经营例会追踪。"],
+        "risk_watchouts": _string_list(payload.get("risk_watchouts"))
+        or ["当前报告基于有限结果集，需结合业务背景审阅。", "若样本窗口较短，结论可能受时间波动影响。"],
+        "appendix_note": str(payload.get("appendix_note", "")).strip()
+        or "本报告由 ChatBI 自动生成，建议结合实际经营背景、渠道反馈和库存策略进行复核。",
+    }
 
 
 def normalize_name_list(raw_value: Any) -> list[str]:
@@ -1073,6 +1240,133 @@ def semantic_admin_rebuild_api():
         ensure_runtime_ready()
         result = rebuild_admin_search(refresh_embeddings=refresh_embeddings)
         return jsonify({"ok": True, "result": result})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/report/templates")
+def report_templates_api():
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            templates = list_report_templates(conn)
+        return jsonify(
+            {
+                "templates": templates,
+                "default_template_id": next(
+                    (item["template_id"] for item in templates if item.get("is_default")),
+                    DEFAULT_TEMPLATE_ID,
+                ),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/report/templates/upload")
+def report_template_upload_api():
+    file_storage = request.files.get("file")
+    if not file_storage:
+        return jsonify({"error": "请先选择要上传的 .docx 报告模板"}), 400
+
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            template_info = save_uploaded_template(conn, file_storage)
+            conn.commit()
+            templates = list_report_templates(conn)
+        return jsonify(
+            {
+                "ok": True,
+                "template": template_info,
+                "templates": templates,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/report/templates/<template_id>/sample")
+def report_template_sample_api(template_id: str):
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            template_row = get_report_template(conn, template_id)
+        return send_file(
+            template_row["file_path"],
+            as_attachment=True,
+            download_name=template_row["file_name"],
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/export/data")
+def export_data_api():
+    payload = request.get_json(silent=True) or {}
+    conversation_id = normalize_conversation_id(payload.get("conversation_id"))
+
+    try:
+        ensure_runtime_ready()
+        latest_result = get_latest_result_or_raise(conversation_id)
+        csv_bytes = build_csv_bytes(latest_result)
+        download_name = build_download_name("chatbi_detail", latest_result, "csv")
+        return send_file(
+            BytesIO(csv_bytes),
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="text/csv",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/export/chart-word")
+def export_chart_word_api():
+    payload = request.get_json(silent=True) or {}
+    conversation_id = normalize_conversation_id(payload.get("conversation_id"))
+    chart_images = normalize_chart_images(payload.get("chart_images"))
+
+    try:
+        ensure_runtime_ready()
+        latest_result = get_latest_result_or_raise(conversation_id)
+        with get_db_conn() as conn:
+            template_row = get_report_template(conn, payload.get("template_id"))
+        document_bytes = build_chart_word_bytes(template_row, latest_result, chart_images)
+        download_name = build_download_name("chart_snapshot", latest_result, "docx")
+        return send_file(
+            BytesIO(document_bytes),
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/report/generate")
+def generate_report_api():
+    payload = request.get_json(silent=True) or {}
+    conversation_id = normalize_conversation_id(payload.get("conversation_id"))
+    llm_provider = normalize_llm_provider(payload.get("llm_provider"))
+    chart_images = normalize_chart_images(payload.get("chart_images"))
+
+    try:
+        ensure_runtime_ready()
+        latest_result = get_latest_result_or_raise(conversation_id)
+        provider_to_use = llm_provider or latest_result.get("llm_provider") or DEFAULT_LLM_PROVIDER
+        report_payload = generate_report_content_by_llm(conversation_id, latest_result, provider_to_use)
+        with get_db_conn() as conn:
+            template_row = get_report_template(conn, payload.get("template_id"))
+        document_bytes = build_management_report_docx(template_row, latest_result, report_payload, chart_images)
+        download_name = build_download_name("business_report", latest_result, "docx")
+        return send_file(
+            BytesIO(document_bytes),
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
