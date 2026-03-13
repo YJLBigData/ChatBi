@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>报告后台管理</title>
+    <style>
+        :root {
+            --bg: #f7f8fb;
+            --panel: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #1f6feb;
+            --primary-soft: #e8f1ff;
+            --border: #e5e7eb;
+            --danger: #b42318;
+            --danger-soft: #fee4e2;
+            --ok: #0a7f47;
+            --shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #eef3ff 0%, #f9fbff 40%, #ffffff 100%);
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .header h1 {
+            margin: 0 0 8px;
+            font-size: 26px;
+        }
+
+        .header p {
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+            gap: 16px;
+            align-items: start;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 18px;
+            box-shadow: var(--shadow);
+            margin-bottom: 16px;
+        }
+
+        .card h3 {
+            margin: 0 0 12px;
+            font-size: 18px;
+        }
+
+        button,
+        a.button {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            padding: 10px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button.secondary,
+        a.button.secondary {
+            background: var(--primary-soft);
+            color: var(--primary);
+        }
+
+        button.danger {
+            background: var(--danger-soft);
+            color: var(--danger);
+        }
+
+        button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .guide-list {
+            margin: 0;
+            padding-left: 20px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            border-bottom: 1px solid var(--border);
+            padding: 10px 8px;
+            vertical-align: top;
+            text-align: left;
+        }
+
+        th {
+            color: var(--muted);
+            font-weight: 600;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--primary-soft);
+            color: var(--primary);
+            font-size: 12px;
+            margin-right: 6px;
+            margin-bottom: 6px;
+        }
+
+        .tag.default {
+            background: #ecfdf3;
+            color: var(--ok);
+        }
+
+        .tag.muted {
+            background: #f3f4f6;
+            color: var(--muted);
+        }
+
+        .inline-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .inline-actions button,
+        .inline-actions a {
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 8px;
+        }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .meta-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            background: #fbfdff;
+        }
+
+        .meta-label {
+            margin: 0 0 8px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .meta-value {
+            margin: 0;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .section {
+            margin-top: 14px;
+        }
+
+        .section h4 {
+            margin: 0 0 8px;
+            font-size: 15px;
+        }
+
+        .section ul {
+            margin: 0;
+            padding-left: 20px;
+            line-height: 1.7;
+        }
+
+        .placeholder {
+            color: var(--muted);
+            line-height: 1.7;
+        }
+
+        .status {
+            margin-top: 12px;
+            min-height: 20px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .status.ok { color: var(--ok); }
+        .status.error { color: var(--danger); }
+
+        pre {
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 14px;
+            border-radius: 12px;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 1080px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div>
+            <h1>报告后台管理</h1>
+            <p>维护报告模板、切换默认模板、查看生成历史并重新下载已生成的 Word 报告。</p>
+        </div>
+        <div class="actions">
+            <button id="refreshBtn" class="secondary">刷新</button>
+            <button id="uploadTemplateBtn" class="secondary">上传模板</button>
+            <a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">打开 ChatBI</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>维护说明</h3>
+        <ul id="guideList" class="guide-list"></ul>
+    </div>
+
+    <div class="layout">
+        <div>
+            <div class="card">
+                <h3>报告模板</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>模板</th>
+                            <th>类型</th>
+                            <th>占位符</th>
+                            <th>更新时间</th>
+                            <th>操作</th>
+                        </tr>
+                        </thead>
+                        <tbody id="templateTableBody">
+                        <tr><td colspan="5" class="placeholder">正在加载模板...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>报告生成历史</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>标题</th>
+                            <th>问题</th>
+                            <th>模板</th>
+                            <th>引擎</th>
+                            <th>操作</th>
+                        </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                        <tr><td colspan="6" class="placeholder">正在加载报告历史...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <h3>历史详情</h3>
+                <div id="detailPanel" class="placeholder">请选择一条报告历史查看详情。</div>
+            </div>
+        </div>
+    </div>
+
+    <input id="templateFileInput" type="file" accept=".docx" hidden>
+    <div id="status" class="status">等待加载...</div>
+</div>
+
+<script>
+    const guideListEl = document.getElementById('guideList');
+    const templateTableBodyEl = document.getElementById('templateTableBody');
+    const historyTableBodyEl = document.getElementById('historyTableBody');
+    const detailPanelEl = document.getElementById('detailPanel');
+    const statusEl = document.getElementById('status');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const uploadTemplateBtn = document.getElementById('uploadTemplateBtn');
+    const templateFileInput = document.getElementById('templateFileInput');
+
+    let templateState = [];
+    let historyState = [];
+    let selectedReportId = '';
+
+    function setStatus(text, type) {
+        statusEl.textContent = text;
+        statusEl.className = `status ${type || ''}`;
+    }
+
+    async function readJsonResponse(response) {
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+            const text = await response.text();
+            throw new Error(text || '服务返回了非 JSON 响应');
+        }
+        return response.json();
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function renderGuide(items) {
+        guideListEl.innerHTML = '';
+        (Array.isArray(items) ? items : []).forEach(item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            guideListEl.appendChild(li);
+        });
+    }
+
+    function renderTemplates(templates) {
+        templateState = Array.isArray(templates) ? templates : [];
+        if (!templateState.length) {
+            templateTableBodyEl.innerHTML = '<tr><td colspan="5" class="placeholder">暂无报告模板。</td></tr>';
+            return;
+        }
+
+        templateTableBodyEl.innerHTML = templateState.map(template => {
+            const tags = [
+                template.is_default ? '<span class="tag default">默认</span>' : '',
+                `<span class="tag">${escapeHtml(template.template_kind)}</span>`
+            ].join('');
+            const placeholders = (template.placeholders || []).slice(0, 4).map(item => `<span class="tag muted">${escapeHtml(item)}</span>`).join('') || '<span class="placeholder">无占位符样例</span>';
+            const deleteBtn = template.template_kind === 'custom'
+                ? `<button class="danger" data-action="delete-template" data-template-id="${escapeHtml(template.template_id)}">删除</button>`
+                : '';
+            return `
+                <tr>
+                    <td>
+                        <div><strong>${escapeHtml(template.template_name)}</strong></div>
+                        <div class="placeholder">${escapeHtml(template.file_name)}</div>
+                    </td>
+                    <td>${tags}</td>
+                    <td>${placeholders}</td>
+                    <td>${escapeHtml(template.updated_at || '--')}</td>
+                    <td>
+                        <div class="inline-actions">
+                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample">下载样例</a>
+                            <button class="secondary" data-action="set-default" data-template-id="${escapeHtml(template.template_id)}" ${template.is_default ? 'disabled' : ''}>设为默认</button>
+                            ${deleteBtn}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderHistory(items) {
+        historyState = Array.isArray(items) ? items : [];
+        if (!historyState.length) {
+            historyTableBodyEl.innerHTML = '<tr><td colspan="6" class="placeholder">暂无报告生成历史。</td></tr>';
+            detailPanelEl.innerHTML = '<div class="placeholder">请选择一条报告历史查看详情。</div>';
+            selectedReportId = '';
+            return;
+        }
+
+        historyTableBodyEl.innerHTML = historyState.map(item => `
+            <tr>
+                <td>${escapeHtml(item.created_at || '--')}</td>
+                <td>${escapeHtml(item.report_title || '--')}</td>
+                <td>${escapeHtml(item.question || '--')}</td>
+                <td>${escapeHtml(item.template_name || '--')}</td>
+                <td>${escapeHtml(item.llm_provider || '--')} / ${escapeHtml(item.model_name || '--')}</td>
+                <td>
+                    <div class="inline-actions">
+                        <button class="secondary" data-action="view-history" data-report-id="${escapeHtml(item.report_id)}">查看</button>
+                        <a class="button secondary" href="/api/admin/report/history/${encodeURIComponent(item.report_id)}/download">下载</a>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        const targetId = historyState.some(item => item.report_id === selectedReportId)
+            ? selectedReportId
+            : historyState[0].report_id;
+        if (targetId) {
+            loadHistoryDetail(targetId).catch(error => setStatus(`加载报告详情失败：${error.message}`, 'error'));
+        }
+    }
+
+    function renderDetail(detail) {
+        if (!detail) {
+            detailPanelEl.innerHTML = '<div class="placeholder">请选择一条报告历史查看详情。</div>';
+            return;
+        }
+        const payload = detail.report_payload || {};
+        const latestResult = detail.latest_result || {};
+        const keyFindings = (payload.key_findings || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>暂无关键发现</li>';
+        const strategyItems = (payload.strategy_recommendations || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>暂无策略建议</li>';
+        const actionItems = (payload.management_actions || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>暂无行动计划</li>';
+        const riskItems = (payload.risk_watchouts || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>暂无风险提示</li>';
+        const analysisSections = (payload.professional_analysis || []).map(section => `
+            <div class="section">
+                <h4>${escapeHtml(section.title || '专业分析')}</h4>
+                <p class="meta-value">${escapeHtml(section.content || '--')}</p>
+            </div>
+        `).join('') || '<div class="placeholder">暂无专业分析内容。</div>';
+
+        detailPanelEl.innerHTML = `
+            <div class="meta-grid">
+                <div class="meta-item">
+                    <p class="meta-label">报告标题</p>
+                    <p class="meta-value">${escapeHtml(detail.report_title || '--')}</p>
+                </div>
+                <div class="meta-item">
+                    <p class="meta-label">原始问题</p>
+                    <p class="meta-value">${escapeHtml(detail.question || '--')}</p>
+                </div>
+                <div class="meta-item">
+                    <p class="meta-label">模板 / 引擎</p>
+                    <p class="meta-value">${escapeHtml(detail.template_name || '--')} / ${escapeHtml(detail.llm_provider || '--')} / ${escapeHtml(detail.model_name || '--')}</p>
+                </div>
+                <div class="meta-item">
+                    <p class="meta-label">指标定义</p>
+                    <p class="meta-value">${escapeHtml(detail.metric_definition || '--')}</p>
+                </div>
+                <div class="meta-item">
+                    <p class="meta-label">维度</p>
+                    <p class="meta-value">${escapeHtml((detail.dimensions || []).join('、') || '整体汇总')}</p>
+                </div>
+                <div class="meta-item">
+                    <p class="meta-label">指标</p>
+                    <p class="meta-value">${escapeHtml((detail.metrics || []).join('、') || '--')}</p>
+                </div>
+            </div>
+
+            <div class="inline-actions" style="margin-bottom: 12px;">
+                <a class="button secondary" href="/api/admin/report/history/${encodeURIComponent(detail.report_id)}/download">下载该报告</a>
+            </div>
+
+            <div class="section">
+                <h4>执行摘要</h4>
+                <p class="meta-value">${escapeHtml(payload.executive_summary || '--')}</p>
+            </div>
+
+            <div class="section">
+                <h4>管理层结论</h4>
+                <p class="meta-value">${escapeHtml(payload.management_summary || '--')}</p>
+            </div>
+
+            <div class="section">
+                <h4>关键发现</h4>
+                <ul>${keyFindings}</ul>
+            </div>
+
+            <div class="section">
+                <h4>专业分析</h4>
+                ${analysisSections}
+            </div>
+
+            <div class="section">
+                <h4>策略建议</h4>
+                <ul>${strategyItems}</ul>
+            </div>
+
+            <div class="section">
+                <h4>行动计划</h4>
+                <ul>${actionItems}</ul>
+            </div>
+
+            <div class="section">
+                <h4>风险与关注点</h4>
+                <ul>${riskItems}</ul>
+            </div>
+
+            <div class="section">
+                <h4>指标描述</h4>
+                <p class="meta-value">${escapeHtml(detail.metric_description || '--')}</p>
+            </div>
+
+            <div class="section">
+                <h4>生成 SQL</h4>
+                <pre>${escapeHtml(latestResult.generated_sql || '--')}</pre>
+            </div>
+        `;
+    }
+
+    async function loadBootstrap() {
+        const response = await fetch('/api/admin/report/bootstrap');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '加载报告后台数据失败');
+        }
+        renderGuide(data.guide || []);
+        renderTemplates(data.templates || []);
+        renderHistory(data.history || []);
+    }
+
+    async function loadHistoryDetail(reportId) {
+        selectedReportId = reportId;
+        const response = await fetch(`/api/admin/report/history/${encodeURIComponent(reportId)}`);
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '加载报告详情失败');
+        }
+        renderDetail(data.detail || null);
+    }
+
+    async function setDefaultTemplate(templateId) {
+        const response = await fetch('/api/admin/report/templates/default', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ template_id: templateId }),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '设置默认模板失败');
+        }
+        renderTemplates(data.templates || []);
+    }
+
+    async function deleteTemplate(templateId) {
+        const response = await fetch(`/api/admin/report/templates/${encodeURIComponent(templateId)}/delete`, {
+            method: 'POST',
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '删除模板失败');
+        }
+        renderTemplates(data.templates || []);
+    }
+
+    async function uploadTemplate(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/report/templates/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '上传模板失败');
+        }
+        renderTemplates(data.templates || []);
+    }
+
+    document.addEventListener('click', event => {
+        const action = event.target.dataset.action;
+        if (!action) {
+            return;
+        }
+        if (action === 'set-default') {
+            const templateId = event.target.dataset.templateId;
+            setStatus('正在切换默认模板...');
+            setDefaultTemplate(templateId)
+                .then(() => setStatus('默认模板已更新', 'ok'))
+                .catch(error => setStatus(`设置默认模板失败：${error.message}`, 'error'));
+            return;
+        }
+        if (action === 'delete-template') {
+            const templateId = event.target.dataset.templateId;
+            if (!window.confirm('确认删除这个自定义模板吗？')) {
+                return;
+            }
+            setStatus('正在删除模板...');
+            deleteTemplate(templateId)
+                .then(() => setStatus('模板已删除', 'ok'))
+                .catch(error => setStatus(`删除模板失败：${error.message}`, 'error'));
+            return;
+        }
+        if (action === 'view-history') {
+            const reportId = event.target.dataset.reportId;
+            setStatus('正在加载报告详情...');
+            loadHistoryDetail(reportId)
+                .then(() => setStatus('报告详情已更新', 'ok'))
+                .catch(error => setStatus(`加载报告详情失败：${error.message}`, 'error'));
+        }
+    });
+
+    refreshBtn.addEventListener('click', () => {
+        setStatus('正在刷新后台数据...');
+        loadBootstrap()
+            .then(() => setStatus('后台数据已刷新', 'ok'))
+            .catch(error => setStatus(`刷新失败：${error.message}`, 'error'));
+    });
+
+    uploadTemplateBtn.addEventListener('click', () => templateFileInput.click());
+    templateFileInput.addEventListener('change', event => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) {
+            return;
+        }
+        setStatus('正在上传并解析模板...');
+        uploadTemplate(file)
+            .then(() => setStatus('模板上传成功', 'ok'))
+            .catch(error => setStatus(`模板上传失败：${error.message}`, 'error'))
+            .finally(() => {
+                templateFileInput.value = '';
+            });
+    });
+
+    loadBootstrap()
+        .then(() => setStatus('报告后台数据加载完成', 'ok'))
+        .catch(error => setStatus(`加载失败：${error.message}`, 'error'));
+</script>
+</body>
+</html>

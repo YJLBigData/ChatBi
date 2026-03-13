@@ -16,10 +16,16 @@ from reporting import (
     build_chart_word_bytes,
     build_csv_bytes,
     build_management_report_docx,
+    delete_report_template,
     ensure_reporting_runtime,
     get_report_template,
+    get_report_history_detail,
+    get_report_history_file,
     list_report_templates,
+    list_report_history,
+    save_report_history,
     save_uploaded_template,
+    set_default_report_template,
 )
 from semantic_layer import (
     ensure_semantic_runtime,
@@ -1188,6 +1194,11 @@ def semantic_admin() -> str:
     return render_template("semantic_admin.html")
 
 
+@app.get("/admin/report")
+def report_admin() -> str:
+    return render_template("report_admin.html")
+
+
 @app.get("/api/admin/semantic/bootstrap")
 def semantic_admin_bootstrap_api():
     try:
@@ -1240,6 +1251,102 @@ def semantic_admin_rebuild_api():
         ensure_runtime_ready()
         result = rebuild_admin_search(refresh_embeddings=refresh_embeddings)
         return jsonify({"ok": True, "result": result})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/admin/report/bootstrap")
+def report_admin_bootstrap_api():
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            templates = list_report_templates(conn)
+            history = list_report_history(conn)
+        return jsonify(
+            {
+                "templates": templates,
+                "default_template_id": next(
+                    (item["template_id"] for item in templates if item.get("is_default")),
+                    DEFAULT_TEMPLATE_ID,
+                ),
+                "history": history,
+                "guide": [
+                    "预置模板仅允许下载和设为默认，不允许删除。",
+                    "自定义模板支持上传、设为默认、删除。",
+                    "每次点击“生成商业报告”都会自动入库，并将 Word 文件落盘到 report_outputs 目录。",
+                    "历史回看可查看报告标题、原始问题、指标口径、模板、引擎、生成时间，并支持重新下载。 ",
+                ],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/admin/report/history")
+def report_history_api():
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            history = list_report_history(conn)
+        return jsonify({"history": history})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/admin/report/history/<report_id>")
+def report_history_detail_api(report_id: str):
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            detail = get_report_history_detail(conn, report_id)
+        return jsonify({"detail": detail})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/admin/report/history/<report_id>/download")
+def report_history_download_api(report_id: str):
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            detail = get_report_history_file(conn, report_id)
+        return send_file(
+            detail["file_path"],
+            as_attachment=True,
+            download_name=detail["file_name"],
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/admin/report/templates/default")
+def report_template_set_default_api():
+    payload = request.get_json(silent=True) or {}
+    template_id = str(payload.get("template_id", "")).strip()
+    if not template_id:
+        return jsonify({"error": "请先选择要设为默认的模板"}), 400
+
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            template_info = set_default_report_template(conn, template_id)
+            conn.commit()
+            templates = list_report_templates(conn)
+        return jsonify({"ok": True, "template": template_info, "templates": templates})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/admin/report/templates/<template_id>/delete")
+def report_template_delete_api(template_id: str):
+    try:
+        ensure_runtime_ready()
+        with get_db_conn() as conn:
+            delete_report_template(conn, template_id)
+            conn.commit()
+            templates = list_report_templates(conn)
+        return jsonify({"ok": True, "templates": templates})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
@@ -1359,14 +1466,30 @@ def generate_report_api():
         report_payload = generate_report_content_by_llm(conversation_id, latest_result, provider_to_use)
         with get_db_conn() as conn:
             template_row = get_report_template(conn, payload.get("template_id"))
-        document_bytes = build_management_report_docx(template_row, latest_result, report_payload, chart_images)
+            document_bytes = build_management_report_docx(template_row, latest_result, report_payload, chart_images)
+            llm_meta = get_llm_provider_meta(provider_to_use)
+            download_name = build_download_name("business_report", latest_result, "docx")
+            report_history = save_report_history(
+                conn,
+                conversation_id=conversation_id,
+                template_row=template_row,
+                latest_result=latest_result,
+                report_payload=report_payload,
+                llm_provider=provider_to_use,
+                model_name=llm_meta["model"],
+                document_bytes=document_bytes,
+                download_name=download_name,
+            )
+            conn.commit()
         download_name = build_download_name("business_report", latest_result, "docx")
-        return send_file(
+        response = send_file(
             BytesIO(document_bytes),
             as_attachment=True,
             download_name=download_name,
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
+        response.headers["X-ChatBI-Report-Id"] = report_history["report_id"]
+        return response
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 

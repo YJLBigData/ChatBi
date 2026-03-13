@@ -15,6 +15,7 @@ from docx.shared import Inches, Pt
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORT_TEMPLATE_DIR = BASE_DIR / "report_templates"
+REPORT_OUTPUT_DIR = BASE_DIR / "report_outputs"
 DEFAULT_TEMPLATE_ID = "default-management-report"
 DEFAULT_TEMPLATE_FILENAME = "default_management_report_template.docx"
 CHINA_GENERAL_TEMPLATE_ID = "china-general-business-report"
@@ -48,11 +49,41 @@ CREATE TABLE IF NOT EXISTS `report_template` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ChatBI报告模板表';
 """
 
+REPORT_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS `report_history` (
+    `report_id` VARCHAR(80) NOT NULL COMMENT '报告ID',
+    `conversation_id` VARCHAR(80) NOT NULL COMMENT '会话ID',
+    `template_id` VARCHAR(80) NOT NULL COMMENT '模板ID',
+    `template_name` VARCHAR(255) NOT NULL COMMENT '模板名称',
+    `template_kind` VARCHAR(32) NOT NULL COMMENT '模板类型',
+    `llm_provider` VARCHAR(32) NOT NULL COMMENT '模型引擎',
+    `model_name` VARCHAR(128) NOT NULL COMMENT '模型名称',
+    `report_title` VARCHAR(255) NOT NULL COMMENT '报告标题',
+    `question` LONGTEXT NULL COMMENT '原始问题',
+    `metric_definition` VARCHAR(255) NULL COMMENT '指标定义',
+    `metric_description` LONGTEXT NULL COMMENT '指标描述',
+    `dimensions_json` LONGTEXT NULL COMMENT '维度列表',
+    `metrics_json` LONGTEXT NULL COMMENT '指标列表',
+    `row_count` INT NOT NULL DEFAULT 0 COMMENT '结果行数',
+    `report_payload_json` LONGTEXT NULL COMMENT '报告内容JSON',
+    `latest_result_json` LONGTEXT NULL COMMENT '查询结果快照JSON',
+    `file_name` VARCHAR(255) NOT NULL COMMENT '文件名',
+    `file_path` VARCHAR(512) NOT NULL COMMENT '文件路径',
+    `file_size` BIGINT NOT NULL DEFAULT 0 COMMENT '文件大小',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`report_id`),
+    KEY `idx_report_history_created_at` (`created_at`),
+    KEY `idx_report_history_conversation` (`conversation_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ChatBI报告生成历史表';
+"""
+
 
 def ensure_reporting_runtime(conn: pymysql.connections.Connection) -> None:
     REPORT_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with conn.cursor() as cursor:
         cursor.execute(REPORT_TEMPLATE_DDL)
+        cursor.execute(REPORT_HISTORY_DDL)
     seed_builtin_templates(conn)
 
 def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
@@ -388,9 +419,52 @@ def save_uploaded_template(conn: pymysql.connections.Connection, file_storage: A
     }
 
 
+def set_default_report_template(conn: pymysql.connections.Connection, template_id: str) -> dict[str, Any]:
+    template_row = get_report_template(conn, template_id)
+    with conn.cursor() as cursor:
+        cursor.execute("UPDATE `report_template` SET `is_default` = 0")
+        cursor.execute(
+            "UPDATE `report_template` SET `is_default` = 1, `updated_at` = NOW() WHERE `template_id` = %s",
+            (template_row["template_id"],),
+        )
+    return get_report_template(conn, template_row["template_id"])
+
+
+def delete_report_template(conn: pymysql.connections.Connection, template_id: str) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT `template_id`, `template_kind`, `file_path`, `is_default`
+            FROM `report_template`
+            WHERE `template_id` = %s
+            """,
+            (template_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("未找到要删除的报告模板")
+        if row["template_kind"] in {"default", "preset"}:
+            raise ValueError("预置模板不允许删除")
+        if row["is_default"]:
+            raise ValueError("默认模板不允许直接删除，请先切换默认模板")
+        cursor.execute("DELETE FROM `report_template` WHERE `template_id` = %s", (template_id,))
+
+    template_path = Path(row["file_path"])
+    if template_path.exists():
+        try:
+            template_path.unlink()
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"模板记录已删除，但清理模板文件失败：{exc}") from exc
+
+
 def sanitize_filename(name: str) -> str:
     base_name = re.sub(r"[^\w\-.]+", "_", name.strip())
     return base_name or "report_template.docx"
+
+
+def build_report_output_name(report_id: str, download_name: str) -> str:
+    safe_name = sanitize_filename(download_name)
+    return f"{report_id}_{safe_name}"
 
 
 def safe_json_dict(raw_value: Any) -> dict[str, Any]:
@@ -676,3 +750,128 @@ def decode_data_url(data_url: str) -> bytes:
         return base64.b64decode(data_url.split(",", 1)[1])
     except Exception:  # noqa: BLE001
         return b""
+
+
+def save_report_history(
+    conn: pymysql.connections.Connection,
+    *,
+    conversation_id: str,
+    template_row: dict[str, Any],
+    latest_result: dict[str, Any],
+    report_payload: dict[str, Any],
+    llm_provider: str,
+    model_name: str,
+    document_bytes: bytes,
+    download_name: str,
+) -> dict[str, Any]:
+    report_id = f"rpt_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    output_name = build_report_output_name(report_id, download_name)
+    output_path = REPORT_OUTPUT_DIR / output_name
+    output_path.write_bytes(document_bytes)
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO `report_history`
+            (`report_id`, `conversation_id`, `template_id`, `template_name`, `template_kind`,
+             `llm_provider`, `model_name`, `report_title`, `question`, `metric_definition`,
+             `metric_description`, `dimensions_json`, `metrics_json`, `row_count`,
+             `report_payload_json`, `latest_result_json`, `file_name`, `file_path`, `file_size`)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                report_id,
+                str(conversation_id or ""),
+                str(template_row.get("template_id") or ""),
+                str(template_row.get("template_name") or ""),
+                str(template_row.get("template_kind") or ""),
+                str(llm_provider or ""),
+                str(model_name or ""),
+                str(report_payload.get("report_title") or latest_result.get("metric_definition") or "商业分析报告"),
+                str(latest_result.get("question") or ""),
+                str(latest_result.get("metric_definition") or ""),
+                str(latest_result.get("metric_description") or ""),
+                json.dumps(latest_result.get("dimensions", []), ensure_ascii=False),
+                json.dumps(latest_result.get("metrics", []), ensure_ascii=False),
+                int(latest_result.get("row_count") or 0),
+                json.dumps(report_payload, ensure_ascii=False, default=str),
+                json.dumps(latest_result, ensure_ascii=False, default=str),
+                download_name,
+                str(output_path),
+                len(document_bytes),
+            ),
+        )
+
+    return get_report_history_detail(conn, report_id)
+
+
+def list_report_history(conn: pymysql.connections.Connection, limit: int = 200) -> list[dict[str, Any]]:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT `report_id`, `conversation_id`, `template_id`, `template_name`, `template_kind`,
+                   `llm_provider`, `model_name`, `report_title`, `question`, `metric_definition`,
+                   `row_count`, `file_name`, `file_path`, `file_size`, `created_at`
+            FROM `report_history`
+            ORDER BY `created_at` DESC, `report_id` DESC
+            LIMIT %s
+            """,
+            (int(limit),),
+        )
+        rows = list(cursor.fetchall())
+    return [_normalize_report_history_summary(row) for row in rows]
+
+
+def get_report_history_detail(conn: pymysql.connections.Connection, report_id: str) -> dict[str, Any]:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT `report_id`, `conversation_id`, `template_id`, `template_name`, `template_kind`,
+                   `llm_provider`, `model_name`, `report_title`, `question`, `metric_definition`,
+                   `metric_description`, `dimensions_json`, `metrics_json`, `row_count`,
+                   `report_payload_json`, `latest_result_json`, `file_name`, `file_path`,
+                   `file_size`, `created_at`
+            FROM `report_history`
+            WHERE `report_id` = %s
+            """,
+            (report_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        raise ValueError("未找到对应的报告历史")
+    detail = _normalize_report_history_summary(row)
+    detail["metric_description"] = str(row.get("metric_description") or "")
+    detail["report_payload"] = safe_json_dict(row.get("report_payload_json"))
+    detail["latest_result"] = safe_json_dict(row.get("latest_result_json"))
+    return detail
+
+
+def get_report_history_file(conn: pymysql.connections.Connection, report_id: str) -> dict[str, Any]:
+    detail = get_report_history_detail(conn, report_id)
+    file_path = Path(detail["file_path"])
+    if not file_path.exists():
+        raise ValueError("报告文件不存在，可能已被清理")
+    return detail
+
+
+def _normalize_report_history_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "report_id": row["report_id"],
+        "conversation_id": row["conversation_id"],
+        "template_id": row["template_id"],
+        "template_name": row["template_name"],
+        "template_kind": row["template_kind"],
+        "llm_provider": row["llm_provider"],
+        "model_name": row["model_name"],
+        "report_title": row["report_title"],
+        "question": row.get("question") or "",
+        "metric_definition": row.get("metric_definition") or "",
+        "dimensions": safe_json_list(row.get("dimensions_json")),
+        "metrics": safe_json_list(row.get("metrics_json")),
+        "row_count": int(row.get("row_count") or 0),
+        "file_name": row["file_name"],
+        "file_path": row["file_path"],
+        "file_size": int(row.get("file_size") or 0),
+        "file_exists": Path(row["file_path"]).exists(),
+        "created_at": str(row["created_at"]),
+    }
