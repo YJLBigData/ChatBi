@@ -95,6 +95,7 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 
 默认报告模板样例文件：
 - `report_templates/default_management_report_template.docx`
+- `report_templates/china_general_business_report_template.docx`
 
 ## 4. 启动服务
 
@@ -134,6 +135,18 @@ python app.py
 - 如果当前结果支持图表，可使用 `下载图表Word`
 - 如需管理层汇报材料，可使用 `生成商业报告`
 - 如需自定义版式，先上传 `.docx` 模板样例，再生成报告
+
+## 7. 测试样例
+
+项目已补充一份可直接执行的测试样例清单：
+- `TEST_SAMPLES.md`
+
+其中包含：
+- 基础冒烟查询
+- 商品/门店/用户/退款联查
+- 澄清追问场景
+- 图表切换
+- 导出与报告回归
 
 ## 6. 语义层维护
 

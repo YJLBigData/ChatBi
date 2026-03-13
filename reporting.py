@@ -17,6 +17,8 @@ BASE_DIR = Path(__file__).resolve().parent
 REPORT_TEMPLATE_DIR = BASE_DIR / "report_templates"
 DEFAULT_TEMPLATE_ID = "default-management-report"
 DEFAULT_TEMPLATE_FILENAME = "default_management_report_template.docx"
+CHINA_GENERAL_TEMPLATE_ID = "china-general-business-report"
+CHINA_GENERAL_TEMPLATE_FILENAME = "china_general_business_report_template.docx"
 TEMPLATE_PLACEHOLDER_GUIDE = [
     "{{report_title}}",
     "{{executive_summary}}",
@@ -51,22 +53,64 @@ def ensure_reporting_runtime(conn: pymysql.connections.Connection) -> None:
     REPORT_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     with conn.cursor() as cursor:
         cursor.execute(REPORT_TEMPLATE_DDL)
-    seed_default_template(conn)
+    seed_builtin_templates(conn)
+
+def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
+    builtin_templates = [
+        {
+            "template_id": DEFAULT_TEMPLATE_ID,
+            "template_name": "默认管理层商业分析报告模板",
+            "template_kind": "default",
+            "file_name": DEFAULT_TEMPLATE_FILENAME,
+            "is_default": True,
+            "builder": create_default_template_file,
+        },
+        {
+            "template_id": CHINA_GENERAL_TEMPLATE_ID,
+            "template_name": "中国通用商业分析报告模板",
+            "template_kind": "preset",
+            "file_name": CHINA_GENERAL_TEMPLATE_FILENAME,
+            "is_default": False,
+            "builder": create_china_general_template_file,
+        },
+    ]
+    for template in builtin_templates:
+        path = REPORT_TEMPLATE_DIR / template["file_name"]
+        if not path.exists():
+            template["builder"](path)
+        metadata = parse_template_file(path)
+        upsert_template_record(
+            conn,
+            template_id=template["template_id"],
+            template_name=template["template_name"],
+            template_kind=template["template_kind"],
+            file_name=path.name,
+            file_path=str(path),
+            style_profile=metadata["style_profile"],
+            placeholders=metadata["placeholders"],
+            is_default=template["is_default"],
+        )
 
 
-def seed_default_template(conn: pymysql.connections.Connection) -> None:
-    default_path = REPORT_TEMPLATE_DIR / DEFAULT_TEMPLATE_FILENAME
-    if not default_path.exists():
-        create_default_template_file(default_path)
-
-    metadata = parse_template_file(default_path)
+def upsert_template_record(
+    conn: pymysql.connections.Connection,
+    *,
+    template_id: str,
+    template_name: str,
+    template_kind: str,
+    file_name: str,
+    file_path: str,
+    style_profile: dict[str, Any],
+    placeholders: list[str],
+    is_default: bool,
+) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
             """
             INSERT INTO `report_template`
             (`template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
              `style_profile_json`, `placeholders_json`, `is_default`)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 `template_name` = VALUES(`template_name`),
                 `template_kind` = VALUES(`template_kind`),
@@ -74,17 +118,18 @@ def seed_default_template(conn: pymysql.connections.Connection) -> None:
                 `file_path` = VALUES(`file_path`),
                 `style_profile_json` = VALUES(`style_profile_json`),
                 `placeholders_json` = VALUES(`placeholders_json`),
-                `is_default` = 1,
+                `is_default` = VALUES(`is_default`),
                 `updated_at` = NOW()
             """,
             (
-                DEFAULT_TEMPLATE_ID,
-                "默认管理层商业分析报告模板",
-                "default",
-                default_path.name,
-                str(default_path),
-                json.dumps(metadata["style_profile"], ensure_ascii=False),
-                json.dumps(metadata["placeholders"], ensure_ascii=False),
+                template_id,
+                template_name,
+                template_kind,
+                file_name,
+                file_path,
+                json.dumps(style_profile, ensure_ascii=False),
+                json.dumps(placeholders, ensure_ascii=False),
+                int(is_default),
             ),
         )
 
@@ -115,6 +160,53 @@ def create_default_template_file(path: Path) -> None:
 
     document.add_paragraph("三、策略建议", style="Heading 2")
     document.add_paragraph("适合沉淀经营策略、经营动作和复盘建议。", style="Normal")
+
+    document.save(path)
+
+
+def create_china_general_template_file(path: Path) -> None:
+    document = Document()
+    title = document.add_paragraph(style="Title")
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.add_run("中国通用商业分析报告模板")
+
+    subtitle = document.add_paragraph(style="Subtitle")
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle.add_run("适用于经营复盘、月度经营分析、区域/渠道/产品专项汇报")
+
+    document.add_paragraph("模板说明", style="Heading 1")
+    document.add_paragraph(
+        "该模板适合中国企业常见的经营分析汇报结构，强调管理摘要、经营看板、问题诊断、策略建议和行动计划。",
+        style="Normal",
+    )
+
+    document.add_paragraph("推荐占位符", style="Heading 1")
+    placeholder_blocks = TEMPLATE_PLACEHOLDER_GUIDE + [
+        "{{market_environment}}",
+        "{{business_overview}}",
+        "{{channel_analysis}}",
+        "{{regional_analysis}}",
+        "{{product_analysis}}",
+        "{{problem_diagnosis}}",
+        "{{resource_requests}}",
+    ]
+    for placeholder in placeholder_blocks:
+        document.add_paragraph(placeholder, style="List Bullet")
+
+    sections = [
+        ("一、管理层摘要", "建议给出一句话结论、经营亮点、主要问题和下一步关注重点。"),
+        ("二、经营总览与看板", "建议嵌入关键指标看板、核心趋势图和重点明细摘要。"),
+        ("三、市场与行业环境", "补充宏观环境、行业趋势、竞争态势或渠道变化。"),
+        ("四、区域/渠道/产品专题分析", "按区域、渠道、产品、用户等维度拆解业绩表现与结构变化。"),
+        ("五、问题诊断", "针对增长不及预期、结构失衡、退款波动等问题给出根因分析。"),
+        ("六、策略建议", "面向管理层给出可执行、可落地的经营策略。"),
+        ("七、重点行动计划", "明确责任部门、节奏安排和预期目标。"),
+        ("八、风险与资源需求", "补充风险点、依赖条件和资源诉求。"),
+        ("九、附录", "可放置数据口径、样本说明、生成 SQL 和明细摘录。"),
+    ]
+    for heading, description in sections:
+        document.add_paragraph(heading, style="Heading 1")
+        document.add_paragraph(description, style="Normal")
 
     document.save(path)
 
