@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -18,6 +19,8 @@ from chatbi.service.context_service import build_context_bundle, estimate_text_t
 from chatbi.service.conversation_service import normalize_name_list, normalize_time_granularity, save_latest_result
 from chatbi.service.llm_service import chat_completion, get_llm_provider_meta, normalize_llm_provider, DEFAULT_PROVIDER
 from semantic_layer import retrieve_semantic_context
+
+logger = logging.getLogger(__name__)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -68,6 +71,7 @@ def validate_and_normalize_sql(sql: str) -> str:
 
 
 def run_query(sql: str) -> tuple[list[str], list[dict[str, Any]]]:
+    logger.info('sql execute start length=%s', len(sql))
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             try:
@@ -77,6 +81,7 @@ def run_query(sql: str) -> tuple[list[str], list[dict[str, Any]]]:
             cursor.execute(sql)
             rows = cursor.fetchall()
             columns = [col[0] for col in cursor.description] if cursor.description else []
+            logger.info('sql execute success columns=%s rows=%s', len(columns), len(rows))
             return columns, rows
 
 
@@ -95,6 +100,14 @@ def generate_query_plan_by_llm(
     semantic_context = retrieve_semantic_context(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
+    )
+    logger.info(
+        'query plan start conversation_id=%s request_id=%s round_no=%s candidate_tables=%s candidate_metrics=%s',
+        conversation_id,
+        request_id or '',
+        round_no or 0,
+        ','.join(semantic_context['candidate_tables']),
+        ','.join(semantic_context['candidate_metrics']),
     )
     context_bundle = build_context_bundle(
         conversation_id,
@@ -244,6 +257,14 @@ def repair_sql_by_llm(
     repaired_sql = str(payload.get('sql', '')).strip()
     if not repaired_sql:
         raise ValueError('模型未返回修复后的 SQL')
+    logger.info(
+        'sql repaired conversation_id=%s request_id=%s round_no=%s original_len=%s repaired_len=%s',
+        conversation_id,
+        request_id or '',
+        round_no or 0,
+        len(failed_sql),
+        len(repaired_sql),
+    )
     return repaired_sql
 
 
@@ -267,6 +288,14 @@ def handle_user_query(
         request_id=request_id,
         round_no=round_no,
     )
+    logger.info(
+        'handle query conversation_id=%s request_id=%s round_no=%s action=%s question=%s',
+        conversation_id,
+        request_id,
+        round_no,
+        llm_result['action'],
+        question[:120],
+    )
     if llm_result['action'] == 'clarify':
         append_conversation_message(conversation_id, 'user', question)
         append_conversation_message(conversation_id, 'assistant', llm_result['assistant_message'], llm_result['assistant_message'])
@@ -283,6 +312,14 @@ def handle_user_query(
     try:
         columns, rows = run_query(sql)
     except Exception as query_exc:  # noqa: BLE001
+        logger.warning(
+            'sql execute failed conversation_id=%s request_id=%s round_no=%s error=%s sql=%s',
+            conversation_id,
+            request_id,
+            round_no,
+            query_exc,
+            sql[:1000],
+        )
         repaired_sql = repair_sql_by_llm(
             conversation_id,
             question,
@@ -340,4 +377,11 @@ def handle_user_query(
         'context_stats': llm_result['context_stats'],
     }
     save_latest_result(conversation_id, result_payload)
+    logger.info(
+        'handle query completed conversation_id=%s request_id=%s round_no=%s row_count=%s',
+        conversation_id,
+        request_id,
+        round_no,
+        len(rows),
+    )
     return result_payload

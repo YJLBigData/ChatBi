@@ -413,7 +413,7 @@
                     <td>
                         <div class="inline-actions">
                             <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample?format=docx">下载Word</a>
-                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample?format=txt">下载Markdown</a>
+                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample?format=txt">下载文本模板</a>
                             <button class="secondary" data-action="set-default" data-template-id="${escapeHtml(template.template_id)}" ${template.is_default ? 'disabled' : ''}>设为默认</button>
                             ${deleteBtn}
                         </div>

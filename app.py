@@ -1,10 +1,13 @@
 import os
+import logging
 from io import BytesIO
+from datetime import datetime
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, g
 
-from chatbi.config import LLM_PROVIDER_OPTIONS, TASK_TYPE_REPORT_GENERATE, TASK_TYPE_SEMANTIC_REBUILD
+from chatbi.config import LLM_PROVIDER_OPTIONS, TASK_QUEUE_WARNING_SECONDS, TASK_TYPE_REPORT_GENERATE, TASK_TYPE_SEMANTIC_REBUILD
+from chatbi.logging_setup import configure_logging
 from chatbi.repository.chat_repository import normalize_conversation_id
 from chatbi.repository.task_repository import list_llm_invocation_logs
 from chatbi.service.conversation_service import get_conversation_view, get_latest_result_or_raise
@@ -40,7 +43,33 @@ from semantic_layer import (
 )
 from chatbi.repository.db import get_db_conn
 
+configure_logging('web')
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
+
+
+@app.before_request
+def before_request_logging():
+    g.request_started_at = datetime.now()
+
+
+@app.after_request
+def after_request_logging(response):
+    started_at = getattr(g, 'request_started_at', None)
+    duration_ms = 0
+    if started_at:
+        duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+    if request.path.startswith('/api/') or request.path.startswith('/admin/'):
+        logger.info(
+            'request finished method=%s path=%s status=%s duration_ms=%s ip=%s',
+            request.method,
+            request.path,
+            response.status_code,
+            duration_ms,
+            request.headers.get('X-Forwarded-For') or request.remote_addr or '-',
+        )
+    return response
 
 
 def normalize_chart_images(raw_items: Any) -> list[dict[str, str]]:
@@ -72,6 +101,31 @@ def ensure_existing_file(file_path: str) -> str:
     return normalized_path
 
 
+def api_error_response(route_name: str, exc: Exception, status_code: int = 500):
+    logger.exception('api error route=%s error=%s', route_name, exc)
+    return jsonify({'error': str(exc)}), status_code
+
+
+def build_task_queue_warning(tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return ''
+    has_running = any(item.get('status') == 'running' for item in tasks)
+    if has_running:
+        return ''
+    now = datetime.now()
+    for item in tasks:
+        if item.get('status') != 'pending':
+            continue
+        created_at = str(item.get('created_at') or '').strip()
+        try:
+            created_time = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            continue
+        if (now - created_time).total_seconds() >= TASK_QUEUE_WARNING_SECONDS:
+            return '检测到任务持续排队，当前没有任务被 worker 消费。请检查 worker.py、systemd 或 supervisor 是否正在运行。'
+    return ''
+
+
 @app.get('/')
 def index() -> str:
     return render_template(
@@ -99,7 +153,7 @@ def semantic_admin_bootstrap_api():
         payload['maintenance_guide'] = get_semantic_maintenance_guide()
         return jsonify(payload)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('semantic_admin_bootstrap', exc)
 
 
 @app.post('/api/admin/semantic/<entity>/save')
@@ -110,7 +164,7 @@ def semantic_admin_save_api(entity: str):
         upsert_admin_entity(entity, payload)
         return jsonify({'ok': True})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('semantic_admin_save', exc)
 
 
 @app.post('/api/admin/semantic/<entity>/delete')
@@ -121,7 +175,7 @@ def semantic_admin_delete_api(entity: str):
         delete_admin_entity(entity, payload)
         return jsonify({'ok': True})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('semantic_admin_delete', exc)
 
 
 @app.post('/api/admin/semantic/sync-schema')
@@ -132,7 +186,7 @@ def semantic_admin_sync_schema_api():
         result = rebuild_admin_search(refresh_embeddings=False)
         return jsonify({'ok': True, 'result': result})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('semantic_admin_sync_schema', exc)
 
 
 @app.post('/api/admin/semantic/rebuild')
@@ -154,7 +208,7 @@ def semantic_admin_rebuild_api():
         result = rebuild_admin_search(refresh_embeddings=refresh_embeddings)
         return jsonify({'ok': True, 'result': result})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('semantic_admin_rebuild', exc)
 
 
 @app.get('/api/admin/report/bootstrap')
@@ -181,7 +235,7 @@ def report_admin_bootstrap_api():
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_admin_bootstrap', exc)
 
 
 @app.get('/api/admin/report/history')
@@ -192,7 +246,7 @@ def report_history_api():
             history = list_report_history(conn)
         return jsonify({'history': history})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_history', exc)
 
 
 @app.get('/api/admin/report/history/<report_id>')
@@ -203,7 +257,7 @@ def report_history_detail_api(report_id: str):
             detail = get_report_history_detail(conn, report_id)
         return jsonify({'detail': detail})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_history_detail', exc)
 
 
 @app.get('/api/admin/report/history/<report_id>/download')
@@ -219,7 +273,7 @@ def report_history_download_api(report_id: str):
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_history_download', exc)
 
 
 @app.post('/api/admin/report/templates/default')
@@ -236,7 +290,7 @@ def report_template_set_default_api():
             templates = list_report_templates(conn)
         return jsonify({'ok': True, 'template': template_info, 'templates': templates})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_template_set_default', exc)
 
 
 @app.post('/api/admin/report/templates/<template_id>/delete')
@@ -249,7 +303,7 @@ def report_template_delete_api(template_id: str):
             templates = list_report_templates(conn)
         return jsonify({'ok': True, 'templates': templates})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_template_delete', exc)
 
 
 @app.get('/api/report/templates')
@@ -268,7 +322,7 @@ def report_templates_api():
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_templates', exc)
 
 
 @app.post('/api/report/templates/upload')
@@ -284,9 +338,10 @@ def report_template_upload_api():
             templates = list_report_templates(conn)
         return jsonify({'ok': True, 'message': '上传成功', 'template': template_info, 'templates': templates})
     except ValueError as exc:
+        logger.warning('report template upload rejected: %s', exc)
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_template_upload', exc)
 
 
 @app.get('/api/report/templates/<template_id>/sample')
@@ -299,7 +354,7 @@ def report_template_sample_api(template_id: str):
         sample_bytes, download_name, mimetype = export_template_sample_bytes(template_row, sample_format)
         return send_file(BytesIO(sample_bytes), as_attachment=True, download_name=download_name, mimetype=mimetype)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('report_template_sample', exc)
 
 
 @app.post('/api/export/data')
@@ -311,7 +366,7 @@ def export_data_api():
         csv_bytes, download_name = export_data_file(conversation_id)
         return send_file(BytesIO(csv_bytes), as_attachment=True, download_name=download_name, mimetype='text/csv')
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('export_data', exc)
 
 
 @app.post('/api/export/chart-word')
@@ -329,7 +384,7 @@ def export_chart_word_api():
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('export_chart_word', exc)
 
 
 @app.post('/api/report/generate')
@@ -375,7 +430,7 @@ def generate_report_api():
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('generate_report', exc)
 
 
 @app.get('/api/tasks')
@@ -387,9 +442,9 @@ def tasks_api():
     try:
         ensure_runtime_ready()
         tasks = list_task_views(client_id=client_id, conversation_id=conversation_id)
-        return jsonify({'tasks': tasks})
+        return jsonify({'tasks': tasks, 'queue_warning': build_task_queue_warning(tasks)})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('tasks', exc)
 
 
 @app.get('/api/tasks/<task_id>')
@@ -401,7 +456,7 @@ def task_detail_api(task_id: str):
             return jsonify({'error': '未找到任务'}), 404
         return jsonify({'task': task})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('task_detail', exc)
 
 
 @app.get('/api/tasks/<task_id>/download')
@@ -423,7 +478,7 @@ def task_download_api(task_id: str):
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('task_download', exc)
 
 
 @app.get('/api/conversation/<conversation_id>')
@@ -432,7 +487,7 @@ def conversation_api(conversation_id: str):
         ensure_runtime_ready()
         return jsonify(get_conversation_view(conversation_id))
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('conversation_view', exc)
 
 
 @app.get('/api/conversation/<conversation_id>/logs')
@@ -442,7 +497,7 @@ def conversation_logs_api(conversation_id: str):
         logs = list_llm_invocation_logs(conversation_id)
         return jsonify({'conversation_id': normalize_conversation_id(conversation_id), 'logs': logs})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('conversation_logs', exc)
 
 
 @app.post('/api/query')
@@ -464,7 +519,7 @@ def query_api():
         )
         return jsonify(result)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': str(exc)}), 500
+        return api_error_response('query', exc)
 
 
 if __name__ == '__main__':

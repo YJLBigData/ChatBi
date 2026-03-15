@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -13,6 +14,8 @@ from docx.opc.exceptions import PackageNotFoundError
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from chatbi.repository.db import ensure_table_columns
+
+logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,6 +36,98 @@ TEMPLATE_PLACEHOLDER_GUIDE = [
     "{{dashboard_snapshot}}",
     "{{detail_table}}",
 ]
+
+DEFAULT_TEMPLATE_JSON_SAMPLE = """{
+  "报告标题": "请填写本次分析主题",
+  "报告日期": "请填写日期",
+  "汇报对象": "请填写管理层或业务部门名称",
+  "分析范围": {
+    "时间范围": "请填写",
+    "业务范围": "请填写",
+    "数据口径说明": "请填写"
+  },
+  "一、核心结论": [
+    "请填写一句话结论1",
+    "请填写一句话结论2"
+  ],
+  "二、关键指标概览": {
+    "核心指标1": "请填写",
+    "核心指标2": "请填写",
+    "核心指标3": "请填写"
+  },
+  "三、业务表现分析": [
+    {
+      "分析主题": "请填写，例如区域表现",
+      "现象描述": "请填写",
+      "原因分析": "请填写"
+    }
+  ],
+  "四、管理建议": [
+    "请填写具体建议1",
+    "请填写具体建议2"
+  ],
+  "五、后续动作": [
+    {
+      "责任部门": "请填写",
+      "动作内容": "请填写",
+      "完成时间": "请填写"
+    }
+  ],
+  "六、风险提示": [
+    "请填写风险点1"
+  ]
+}"""
+
+CHINA_GENERAL_TEMPLATE_JSON_SAMPLE = """{
+  "报告标题": "请填写经营分析报告标题",
+  "报告周期": "请填写，例如2026年3月",
+  "汇报人": "请填写",
+  "汇报对象": "请填写",
+  "一、管理层摘要": {
+    "总体结论": "请填写",
+    "亮点概括": [
+      "请填写亮点1",
+      "请填写亮点2"
+    ],
+    "主要问题": [
+      "请填写问题1"
+    ]
+  },
+  "二、经营总览": {
+    "销售金额": "请填写",
+    "订单数": "请填写",
+    "客单价": "请填写",
+    "退款金额": "请填写"
+  },
+  "三、专项分析": [
+    {
+      "分析维度": "请填写，例如品牌/区域/会员等级",
+      "表现结论": "请填写",
+      "原因拆解": "请填写",
+      "建议动作": "请填写"
+    }
+  ],
+  "四、经营策略建议": [
+    "请填写策略建议1",
+    "请填写策略建议2"
+  ],
+  "五、重点行动计划": [
+    {
+      "责任人": "请填写",
+      "动作": "请填写",
+      "目标": "请填写",
+      "时间节点": "请填写"
+    }
+  ],
+  "六、风险与资源需求": {
+    "风险提示": [
+      "请填写风险点"
+    ],
+    "资源需求": [
+      "请填写资源诉求"
+    ]
+  }
+}"""
 
 REPORT_TEMPLATE_DDL = """
 CREATE TABLE IF NOT EXISTS `report_template` (
@@ -97,6 +192,7 @@ def ensure_reporting_runtime(conn: pymysql.connections.Connection) -> None:
         cursor.execute(REPORT_HISTORY_DDL)
         ensure_table_columns(cursor, 'report_template', REPORT_TEMPLATE_MIGRATIONS)
     seed_builtin_templates(conn)
+    logger.info('report runtime ready templates_dir=%s outputs_dir=%s', str(REPORT_TEMPLATE_DIR), str(REPORT_OUTPUT_DIR))
 
 def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
     builtin_templates = [
@@ -119,8 +215,7 @@ def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
     ]
     for template in builtin_templates:
         path = REPORT_TEMPLATE_DIR / template["file_name"]
-        if not path.exists():
-            template["builder"](path)
+        template["builder"](path)
         metadata = parse_template_file(path)
         upsert_template_record(
             conn,
@@ -136,6 +231,7 @@ def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
             placeholders=metadata["placeholders"],
             is_default=template["is_default"],
         )
+        logger.info('builtin template synced template_id=%s file=%s', template["template_id"], str(path))
 
 
 def upsert_template_record(
@@ -193,28 +289,33 @@ def create_default_template_file(path: Path) -> None:
     document = Document()
     title = document.add_paragraph(style="Title")
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.add_run("ChatBI 管理层商业分析报告模板")
+    title.add_run("经营分析报告填写模板")
 
     subtitle = document.add_paragraph(style="Subtitle")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    subtitle.add_run("用于生成经营概览、看板快照、专业分析与策略建议")
+    subtitle.add_run("适用于管理层经营复盘、专项分析和经营决策汇报")
 
-    document.add_paragraph("样式说明：上传自定义模板时，系统会自动解析标题、正文、表格和列表样式。", style="Normal")
+    document.add_paragraph("填写说明", style="Heading 1")
+    document.add_paragraph("1. 这是一份可直接修改的中文模板，请把示例内容替换成你的真实分析结论。", style="Normal")
+    document.add_paragraph("2. 如果你习惯按字段整理内容，可以直接按照下面的字段结构填写。", style="Normal")
+    document.add_paragraph("3. 上传自定义模板时，系统会自动识别标题、正文、列表和表格样式。", style="Normal")
 
-    document.add_paragraph("报告占位建议", style="Heading 1")
-    document.add_paragraph("以下标记仅作为模板样例，系统会自动识别并提取模板风格：", style="Normal")
-    for placeholder in TEMPLATE_PLACEHOLDER_GUIDE:
-        document.add_paragraph(placeholder, style="List Bullet")
+    document.add_paragraph("建议填写字段", style="Heading 1")
+    for line in DEFAULT_TEMPLATE_JSON_SAMPLE.splitlines():
+        document.add_paragraph(line, style="Normal")
 
-    document.add_paragraph("章节示例", style="Heading 1")
+    document.add_paragraph("建议章节结构", style="Heading 1")
     document.add_paragraph("一、执行摘要", style="Heading 2")
-    document.add_paragraph("建议保留管理层摘要、指标看板、问题诊断、策略建议、行动计划和风险提示等结构。", style="Normal")
+    document.add_paragraph("用 2 到 4 句话说明本次分析最重要的结论、亮点和风险。", style="Normal")
 
     document.add_paragraph("二、看板快照", style="Heading 2")
-    document.add_paragraph("可放置业务图表、关键指标表和明细摘要。", style="Normal")
+    document.add_paragraph("建议放置关键指标、趋势图、重点排名和必要的明细摘要。", style="Normal")
 
-    document.add_paragraph("三、策略建议", style="Heading 2")
-    document.add_paragraph("适合沉淀经营策略、经营动作和复盘建议。", style="Normal")
+    document.add_paragraph("三、业务表现分析", style="Heading 2")
+    document.add_paragraph("围绕区域、品牌、品类、用户等维度拆解表现，并写清原因。", style="Normal")
+
+    document.add_paragraph("四、管理建议", style="Heading 2")
+    document.add_paragraph("建议按“问题-动作-目标”方式表达，方便业务部门直接接收执行。", style="Normal")
 
     document.save(path)
 
@@ -231,33 +332,23 @@ def create_china_general_template_file(path: Path) -> None:
 
     document.add_paragraph("模板说明", style="Heading 1")
     document.add_paragraph(
-        "该模板适合中国企业常见的经营分析汇报结构，强调管理摘要、经营看板、问题诊断、策略建议和行动计划。",
+        "该模板适合中国企业常见的经营分析汇报场景，语言尽量直接、完整、方便业务和管理层阅读。",
         style="Normal",
     )
 
-    document.add_paragraph("推荐占位符", style="Heading 1")
-    placeholder_blocks = TEMPLATE_PLACEHOLDER_GUIDE + [
-        "{{market_environment}}",
-        "{{business_overview}}",
-        "{{channel_analysis}}",
-        "{{regional_analysis}}",
-        "{{product_analysis}}",
-        "{{problem_diagnosis}}",
-        "{{resource_requests}}",
-    ]
-    for placeholder in placeholder_blocks:
-        document.add_paragraph(placeholder, style="List Bullet")
+    document.add_paragraph("建议填写字段", style="Heading 1")
+    for line in CHINA_GENERAL_TEMPLATE_JSON_SAMPLE.splitlines():
+        document.add_paragraph(line, style="Normal")
 
     sections = [
         ("一、管理层摘要", "建议给出一句话结论、经营亮点、主要问题和下一步关注重点。"),
         ("二、经营总览与看板", "建议嵌入关键指标看板、核心趋势图和重点明细摘要。"),
-        ("三、市场与行业环境", "补充宏观环境、行业趋势、竞争态势或渠道变化。"),
-        ("四、区域/渠道/产品专题分析", "按区域、渠道、产品、用户等维度拆解业绩表现与结构变化。"),
-        ("五、问题诊断", "针对增长不及预期、结构失衡、退款波动等问题给出根因分析。"),
-        ("六、策略建议", "面向管理层给出可执行、可落地的经营策略。"),
-        ("七、重点行动计划", "明确责任部门、节奏安排和预期目标。"),
-        ("八、风险与资源需求", "补充风险点、依赖条件和资源诉求。"),
-        ("九、附录", "可放置数据口径、样本说明、生成 SQL 和明细摘录。"),
+        ("三、专项分析", "按区域、渠道、品牌、品类、用户等维度拆解表现和结构变化。"),
+        ("四、问题诊断", "针对增长不及预期、结构失衡、退款波动等问题给出根因分析。"),
+        ("五、经营策略建议", "面向管理层给出可执行、可落地的经营策略。"),
+        ("六、重点行动计划", "明确责任部门、节奏安排和预期目标。"),
+        ("七、风险与资源需求", "补充风险点、依赖条件和资源诉求。"),
+        ("八、附录", "可放置数据口径、样本说明、生成 SQL 和明细摘录。"),
     ]
     for heading, description in sections:
         document.add_paragraph(heading, style="Heading 1")
@@ -287,6 +378,7 @@ def parse_template_file(file_path: str | Path) -> dict[str, Any]:
         "table_style": pick_table_style(document),
     }
     validation_summary = validate_docx_template(document, placeholders, template_prompt_text)
+    logger.info('docx template parsed file=%s placeholders=%s', str(path), len(placeholders))
     return {
         "style_profile": style_profile,
         "placeholders": placeholders,
@@ -368,7 +460,7 @@ def validate_report_prompt_text(text: str) -> dict[str, Any]:
     keyword_groups = ['摘要', '分析', '建议', '策略', '风险', '行动', '结论', '管理层', '看板', '复盘', '经营']
     hit_keywords = [keyword for keyword in keyword_groups if keyword in normalized]
     structural_hits = sum(
-        1 for pattern in [r'(^|\n)\s*[一二三四五六七八九十]\s*[、.]', r'(^|\n)\s*#', r'\{\{[^{}]+\}\}', r'(^|\n)\s*[-*]\s+']
+        1 for pattern in [r'(^|\n)\s*[一二三四五六七八九十]\s*[、.]', r'(^|\n)\s*#', r'\{\{[^{}]+\}\}', r'(^|\n)\s*[-*]\s+', r'(^|\n)\s*\{']
         if re.search(pattern, normalized, re.MULTILINE)
     )
     line_count = len([line for line in normalized.splitlines() if line.strip()])
@@ -416,6 +508,7 @@ def parse_text_template_file(file_path: str | Path) -> dict[str, Any]:
         raise ValueError(f'文件内容问题：文本模板读取失败，{exc}') from exc
     placeholders = re.findall(r'\{\{[^{}]+\}\}', raw_text)
     validation_summary = validate_report_prompt_text(raw_text)
+    logger.info('text template parsed file=%s placeholders=%s', str(path), len(placeholders))
     return {
         'style_profile': {
             'title_style': 'Title',
@@ -562,6 +655,7 @@ def save_uploaded_template(conn: pymysql.connections.Connection, file_storage: A
                     json.dumps(metadata["placeholders"], ensure_ascii=False),
                 ),
             )
+        logger.info('custom template saved template_id=%s file=%s source_format=%s', template_id, str(target_path), source_format)
     except Exception:
         if target_path.exists():
             try:
@@ -766,6 +860,13 @@ def build_management_report_docx(
     report_payload: dict[str, Any],
     chart_images: list[dict[str, Any]],
 ) -> bytes:
+    logger.info(
+        'building report docx template=%s metric=%s rows=%s charts=%s',
+        template_row.get("template_name", ""),
+        latest_result.get("metric_definition", ""),
+        latest_result.get("row_count", 0),
+        len(chart_images or []),
+    )
     document = prepare_document(template_row)
     styles = template_row.get("style_profile", {})
 
@@ -983,6 +1084,7 @@ def save_report_history(
     output_name = build_report_output_name(report_id, download_name)
     output_path = REPORT_OUTPUT_DIR / output_name
     output_path.write_bytes(document_bytes)
+    logger.info('report file saved report_id=%s file=%s size=%s', report_id, str(output_path), len(document_bytes))
 
     with conn.cursor() as cursor:
         cursor.execute(

@@ -23,6 +23,7 @@
 - 支持下载当前查询明细数据 CSV，并可导出图表快照 Word
 - 支持生成管理层商业分析报告 Word，默认提供专业报告模板，并支持上传自定义 `.docx` 模板样例解析样式
 - 支持上传 `.docx / .txt / .md` 报告模板，自动校验模板结构或提示词内容是否合法
+- 内置日志系统会同时写入 Web 和 worker 日志，总日志体积超过 1GB 时会自动删除最旧日志
 
 ## 1. 环境准备
 
@@ -46,6 +47,7 @@ cp .env.example .env
 - `DASHSCOPE_API_KEY`
 - `DASHSCOPE_MODEL`
 - `DEEPSEEK_API_KEY`
+- 如需自定义日志行为，可配置 `LOG_DIR / LOG_FILE_MAX_BYTES / LOG_FILE_BACKUP_COUNT / LOG_TOTAL_MAX_BYTES`
 - `DEEPSEEK_MODEL`
 - `DEFAULT_LLM_PROVIDER`
 - `DASHSCOPE_EMBEDDING_MODEL`
@@ -171,7 +173,7 @@ python worker.py
 - 预置模板只建议下载和设为默认，不建议改名或手工替换文件
 - Word 模板上传后会自动校验标题、章节、占位符和样式结构；如果无法识别，会直接返回“格式检索失败”
 - 文本模板上传后会自动校验是否包含摘要、分析、建议、风险等报告要素；如果内容不足，会直接返回“文件内容问题”
-- 默认模板支持下载 Word 样例，也支持转换为 Markdown TXT 样例后再做自定义处理
+- 默认模板支持下载 Word 样例，也支持转换为纯文本 TXT 样例后再做自定义处理
 - 历史报告文件默认保存在 `report_outputs/`，可按需做定期清理或归档
 - 如果需要给管理层长期留档，建议同时把生成记录同步到对象存储或归档盘
 
@@ -199,6 +201,22 @@ sudo cp deploy/supervisor/chatbi-worker.conf /etc/supervisor/conf.d/
 sudo supervisorctl reread
 sudo supervisorctl update
 sudo supervisorctl status chatbi-worker
+```
+
+如果是当前这台 macOS，本地更适合使用 `launchd`：
+
+```bash
+mkdir -p /Users/yangjinlong/app/PythonProject/ChatBiTest/logs
+cp deploy/launchd/com.chatbi.worker.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.chatbi.worker.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.chatbi.worker.plist
+launchctl list | grep com.chatbi.worker
+```
+
+如果需要停止：
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.chatbi.worker.plist
 ```
 
 ## 7. 测试样例

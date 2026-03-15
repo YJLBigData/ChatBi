@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from reporting import (
     get_report_template,
     save_report_history,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_filename_component(text: str, fallback: str) -> str:
@@ -175,6 +178,13 @@ def generate_report_content_by_llm(
         temperature=0.2,
     )
     payload = extract_json_payload(response['content'])
+    logger.info(
+        'report content generated conversation_id=%s provider=%s request_id=%s round_no=%s',
+        conversation_id,
+        llm_provider,
+        request_id,
+        round_no or 0,
+    )
     return normalize_report_payload(payload, latest_result)
 
 
@@ -203,6 +213,13 @@ def execute_report_generation_task(task_payload: dict[str, Any], progress: Calla
 
     latest_result = get_latest_result_or_raise(conversation_id)
     provider_to_use = llm_provider or latest_result.get('llm_provider')
+    logger.info(
+        'report task start conversation_id=%s provider=%s template_id=%s client_id=%s',
+        conversation_id,
+        provider_to_use,
+        template_id or '',
+        client_id or '',
+    )
     with get_db_conn() as conn:
         template_row = get_report_template(conn, template_id)
     if progress:
@@ -234,6 +251,12 @@ def execute_report_generation_task(task_payload: dict[str, Any], progress: Calla
         conn.commit()
     if progress:
         progress(100, {'step': '完成'})
+    logger.info(
+        'report task completed conversation_id=%s report_id=%s file=%s',
+        conversation_id,
+        report_history['report_id'],
+        report_history['file_name'],
+    )
     return {
         'report_id': report_history['report_id'],
         'download_name': report_history['file_name'],

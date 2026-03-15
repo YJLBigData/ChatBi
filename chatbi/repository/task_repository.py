@@ -40,6 +40,22 @@ def _loads_json(raw_value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _summarize_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    chart_images = normalized.get('chart_images')
+    if isinstance(chart_images, list):
+        normalized['chart_images'] = [
+            {
+                'title': str(item.get('title') or '图表快照'),
+                'caption': str(item.get('caption') or ''),
+                'png_data_url': f"[图片数据，已省略，长度 {len(str(item.get('png_data_url') or ''))} 字符]",
+            }
+            for item in chart_images
+            if isinstance(item, dict)
+        ]
+    return normalized
+
+
 def _normalize_task_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         'task_id': row['task_id'],
@@ -53,7 +69,7 @@ def _normalize_task_row(row: dict[str, Any]) -> dict[str, Any]:
         'worker_id': row.get('worker_id') or '',
         'claim_token': row.get('claim_token') or '',
         'lease_expires_at': str(row.get('lease_expires_at') or ''),
-        'payload': _loads_json(row.get('payload_json')),
+        'payload': _summarize_task_payload(_loads_json(row.get('payload_json'))),
         'result': _loads_json(row.get('result_json')),
         'error_message': row.get('error_message') or '',
         'created_at': str(row.get('created_at') or ''),

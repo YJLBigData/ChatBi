@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from openai import OpenAI
@@ -9,6 +10,8 @@ from chatbi.config import (
     LLM_REQUEST_TIMEOUT_SECONDS,
 )
 from chatbi.repository.task_repository import insert_llm_invocation_log
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_llm_provider(raw_value: Any) -> str:
@@ -78,6 +81,15 @@ def chat_completion(
         'temperature': temperature,
     }
     try:
+        logger.info(
+            'llm request stage=%s provider=%s model=%s conversation_id=%s request_id=%s round_no=%s',
+            stage,
+            runtime['provider'],
+            runtime['model'],
+            conversation_id or '',
+            request_id or '',
+            round_no or 0,
+        )
         completion = runtime['client'].chat.completions.create(
             model=runtime['model'],
             messages=messages,
@@ -95,6 +107,15 @@ def chat_completion(
             model_name=runtime['model'],
             request_payload=request_payload,
             response_payload=response_payload,
+        )
+        logger.info(
+            'llm response stage=%s provider=%s model=%s conversation_id=%s request_id=%s chars=%s',
+            stage,
+            runtime['provider'],
+            runtime['model'],
+            conversation_id or '',
+            request_id or '',
+            len(content),
         )
         return {
             'provider': runtime['provider'],
@@ -114,5 +135,14 @@ def chat_completion(
             model_name=runtime['model'],
             request_payload=request_payload,
             error_message=str(exc),
+        )
+        logger.exception(
+            'llm request failed stage=%s provider=%s model=%s conversation_id=%s request_id=%s error=%s',
+            stage,
+            runtime['provider'],
+            runtime['model'],
+            conversation_id or '',
+            request_id or '',
+            exc,
         )
         raise

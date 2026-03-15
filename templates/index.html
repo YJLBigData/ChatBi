@@ -683,7 +683,32 @@
             font-size: 12px;
             line-height: 1.65;
             overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
             margin: 0;
+        }
+
+        .log-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 8px 0 10px;
+        }
+
+        .log-actions button {
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 8px;
+        }
+
+        .log-note {
+            margin: 8px 0 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-size: 12px;
+            line-height: 1.6;
         }
 
         .json-key {
@@ -866,7 +891,7 @@
                 <label for="templateSampleFormatSelect">模板样例格式</label>
                 <select id="templateSampleFormatSelect">
                     <option value="docx">Word</option>
-                    <option value="txt">Markdown TXT</option>
+                    <option value="txt">文本模板 TXT</option>
                 </select>
             </div>
         </div>
@@ -1007,6 +1032,7 @@
     let reportTemplates = [];
     let currentTaskItems = [];
     let currentExecutionLogs = [];
+    const logDisplayCache = new Map();
     let taskPanelOpen = false;
     let taskPollTimer = null;
 
@@ -1225,8 +1251,119 @@
         updateExportButtons();
     }
 
+    function decodeHtmlEntities(value) {
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = String(value ?? '');
+        return textarea.value;
+    }
+
+    function tryParseJson(rawValue) {
+        if (rawValue === null || rawValue === undefined) {
+            return null;
+        }
+        if (typeof rawValue === 'object') {
+            return rawValue;
+        }
+        const text = String(rawValue).trim();
+        if (!text) {
+            return null;
+        }
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function wrapLongText(text, size = 160) {
+        return String(text ?? '').split('\n').map(line => {
+            if (line.length <= size) {
+                return line;
+            }
+            const chunks = [];
+            for (let index = 0; index < line.length; index += size) {
+                chunks.push(line.slice(index, index + size));
+            }
+            return chunks.join('\n');
+        }).join('\n');
+    }
+
+    function normalizeLogValue(value) {
+        if (Array.isArray(value)) {
+            return value.map(item => normalizeLogValue(item));
+        }
+        if (value && typeof value === 'object') {
+            const normalized = {};
+            Object.entries(value).forEach(([key, item]) => {
+                normalized[key] = normalizeLogValue(item);
+            });
+            return normalized;
+        }
+        if (typeof value === 'string') {
+            const decoded = decodeHtmlEntities(value);
+            if (decoded.startsWith('data:image/')) {
+                return `[图片数据，已省略，长度 ${decoded.length} 字符]`;
+            }
+            const nested = tryParseJson(decoded);
+            return nested !== null ? normalizeLogValue(nested) : wrapLongText(decoded);
+        }
+        return value;
+    }
+
+    function formatDisplayJson(value, indent = 0) {
+        const pad = '  '.repeat(indent);
+        if (Array.isArray(value)) {
+            if (!value.length) {
+                return '[]';
+            }
+            return `[\n${value.map(item => `${'  '.repeat(indent + 1)}${formatDisplayJson(item, indent + 1)}`).join(',\n')}\n${pad}]`;
+        }
+        if (value && typeof value === 'object') {
+            const entries = Object.entries(value);
+            if (!entries.length) {
+                return '{}';
+            }
+            return `{\n${entries.map(([key, item]) => {
+                if (typeof item === 'string' && item.includes('\n')) {
+                    return `${'  '.repeat(indent + 1)}"${key}": """\n${item.split('\n').map(line => `${'  '.repeat(indent + 2)}${line}`).join('\n')}\n${'  '.repeat(indent + 1)}"""`;
+                }
+                return `${'  '.repeat(indent + 1)}"${key}": ${formatDisplayJson(item, indent + 1)}`;
+            }).join(',\n')}\n${pad}}`;
+        }
+        if (typeof value === 'string') {
+            return JSON.stringify(value);
+        }
+        return JSON.stringify(value);
+    }
+
+    function prepareLogDisplay(rawText, kind) {
+        const parsed = normalizeLogValue(tryParseJson(rawText) ?? decodeHtmlEntities(rawText || ''));
+        const nestedContent = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed.content
+            : null;
+        const isSqlOnlyResponse = kind === 'response'
+            && nestedContent
+            && typeof nestedContent === 'object'
+            && !Array.isArray(nestedContent)
+            && Object.keys(nestedContent).length === 1
+            && typeof nestedContent.sql === 'string';
+        const displayObject = isSqlOnlyResponse
+            ? {
+                提示: '模型本轮主要返回 SQL 修复结果，请看页面最下方“生成 SQL”区域。',
+                返回类型: 'SQL 修复结果',
+                SQL长度: nestedContent.sql.length,
+            }
+            : parsed;
+        return {
+            plainText: typeof displayObject === 'string' ? wrapLongText(displayObject) : formatDisplayJson(displayObject),
+            rawPlainText: typeof parsed === 'string' ? wrapLongText(parsed) : formatDisplayJson(parsed),
+            note: isSqlOnlyResponse ? '模型本轮主要返回 SQL 修复结果，页面已优先提示你直接查看“生成 SQL”。' : '',
+        };
+    }
+
     function renderExecutionLogs(logs) {
         const filteredLogs = Array.isArray(logs) ? logs : [];
+        logDisplayCache.clear();
         if (filteredLogs.length === 0) {
             executionLogPanelEl.innerHTML = '<span class="placeholder-line">-- 暂无执行日志</span>';
             return;
@@ -1243,19 +1380,44 @@
                         请求链路：${escapeHtml(log.request_id || '--')}
                     </div>
                     <div class="toolbar-tip">发送给模型的 JSON</div>
-                    <pre class="json-view">${syntaxHighlightJson(log.request_json || '{}')}</pre>
+                    <div class="log-actions">
+                        <button class="secondary-btn copy-log-btn" type="button" data-log-id="${escapeHtml(String(log.id))}" data-copy-type="request">复制请求内容</button>
+                    </div>
+                    <pre class="json-view">${syntaxHighlightJson(prepareLogDisplay(log.request_json || '{}', 'request').plainText)}</pre>
                     ${log.response_json ? `
                         <div class="toolbar-tip">模型返回</div>
-                        <pre class="json-view">${syntaxHighlightJson(log.response_json || '{}')}</pre>
+                        ${prepareLogDisplay(log.response_json || '{}', 'response').note ? `<div class="log-note">${escapeHtml(prepareLogDisplay(log.response_json || '{}', 'response').note)}</div>` : ''}
+                        <div class="log-actions">
+                            <button class="secondary-btn copy-log-btn" type="button" data-log-id="${escapeHtml(String(log.id))}" data-copy-type="response">复制返回内容</button>
+                        </div>
+                        <pre class="json-view">${syntaxHighlightJson(prepareLogDisplay(log.response_json || '{}', 'response').plainText)}</pre>
                         <details style="margin-top:10px;">
                             <summary style="cursor:pointer;color:#1f6feb;font-size:12px;font-weight:700;">折叠查看 prompt / response diff</summary>
-                            ${buildJsonDiffHtml(log.request_json || '{}', log.response_json || '{}')}
+                            ${buildJsonDiffHtml(prepareLogDisplay(log.request_json || '{}', 'request').rawPlainText, prepareLogDisplay(log.response_json || '{}', 'response').rawPlainText)}
                         </details>
                     ` : ''}
                     ${log.error_message ? `<div class="toolbar-tip" style="color:#c62828;">调用异常：${escapeHtml(log.error_message)}</div>` : ''}
                 </div>
             </details>
         `).join('');
+        filteredLogs.forEach(log => {
+            logDisplayCache.set(`${log.id}:request`, prepareLogDisplay(log.request_json || '{}', 'request').rawPlainText);
+            if (log.response_json) {
+                logDisplayCache.set(`${log.id}:response`, prepareLogDisplay(log.response_json || '{}', 'response').rawPlainText);
+            }
+        });
+        Array.from(executionLogPanelEl.querySelectorAll('.copy-log-btn')).forEach(button => {
+            button.addEventListener('click', async () => {
+                const cacheKey = `${button.dataset.logId}:${button.dataset.copyType}`;
+                const content = logDisplayCache.get(cacheKey) || '';
+                try {
+                    await navigator.clipboard.writeText(content);
+                    setStatus(button.dataset.copyType === 'request' ? '请求内容已复制' : '返回内容已复制', 'ok');
+                } catch (error) {
+                    setStatus(`复制失败：${error.message}`, 'error');
+                }
+            });
+        });
     }
 
     async function loadExecutionLogs() {
@@ -1305,11 +1467,7 @@
     }
 
     function prettyJsonText(rawText) {
-        try {
-            return JSON.stringify(JSON.parse(rawText || '{}'), null, 2);
-        } catch (error) {
-            return String(rawText || '').trim();
-        }
+        return prepareLogDisplay(rawText, 'request').rawPlainText;
     }
 
     function buildDiffRows(leftLines, rightLines) {
@@ -1430,6 +1588,9 @@
         const data = await readJsonResponse(response);
         if (!response.ok) {
             throw new Error(data.error || '加载任务列表失败');
+        }
+        if (data.queue_warning) {
+            setStatus(data.queue_warning, 'error');
         }
         renderTaskWidget(data.tasks || []);
     }
@@ -2110,7 +2271,7 @@
             blob,
             fileName,
             {
-                description: sampleFormat === 'txt' ? 'TXT 模板样例' : 'Word 模板样例',
+                description: sampleFormat === 'txt' ? '文本模板样例' : 'Word 模板样例',
                 accept: sampleFormat === 'txt'
                     ? { 'text/plain': ['.txt'] }
                     : { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
