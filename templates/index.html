@@ -498,6 +498,177 @@
             display: block;
         }
 
+        .task-indicator {
+            position: fixed;
+            right: 22px;
+            bottom: 92px;
+            z-index: 21;
+        }
+
+        .task-badge {
+            min-width: 104px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            border: 1px solid rgba(31, 111, 235, 0.16);
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .task-badge .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #94a3b8;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .task-badge.has-active .dot {
+            background: #f59e0b;
+        }
+
+        .task-badge.has-ready .dot {
+            background: #0a7f47;
+        }
+
+        .task-panel {
+            position: absolute;
+            right: 0;
+            bottom: 54px;
+            width: 360px;
+            max-height: 420px;
+            overflow: auto;
+            display: none;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+        }
+
+        .task-panel.open {
+            display: block;
+        }
+
+        .task-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 10px;
+            background: #fbfdff;
+        }
+
+        .task-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .task-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .task-name {
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.5;
+        }
+
+        .task-meta {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .task-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .task-actions a,
+        .task-actions button {
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 8px;
+        }
+
+        .log-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .log-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #fbfdff;
+            overflow: hidden;
+        }
+
+        .log-item summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .log-item summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .log-meta {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .log-body {
+            padding: 0 14px 14px;
+        }
+
+        .json-view {
+            background: #0b1220;
+            color: #e5eefb;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.65;
+            overflow-x: auto;
+            margin: 0;
+        }
+
+        .json-key {
+            color: #7dd3fc;
+        }
+
+        .json-string {
+            color: #86efac;
+        }
+
+        .json-number {
+            color: #fbbf24;
+        }
+
+        .json-boolean {
+            color: #fda4af;
+        }
+
+        .json-null {
+            color: #c4b5fd;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 16px;
@@ -610,6 +781,24 @@
         <h3>生成 SQL</h3>
         <pre id="sqlBox">-- 暂无 SQL</pre>
     </div>
+
+    <div class="card">
+        <h3>执行日志</h3>
+        <div id="executionLogPanel" class="log-panel">
+            <span class="placeholder-line">-- 暂无执行日志</span>
+        </div>
+    </div>
+</div>
+<div id="taskIndicator" class="task-indicator">
+    <button id="taskBadge" class="task-badge" type="button">
+        <span class="dot"></span>
+        <span id="taskBadgeText">下载任务 0</span>
+    </button>
+    <div id="taskPanel" class="task-panel">
+        <div id="taskList">
+            <span class="placeholder-line">-- 暂无任务</span>
+        </div>
+    </div>
 </div>
 <div id="contextIndicator" class="context-indicator">
     <div id="contextBadge" class="context-badge" tabindex="0" aria-label="上下文使用状态">
@@ -654,6 +843,12 @@
     const downloadTemplateSampleBtn = document.getElementById('downloadTemplateSampleBtn');
     const uploadTemplateBtn = document.getElementById('uploadTemplateBtn');
     const reportTemplateFileInput = document.getElementById('reportTemplateFileInput');
+    const executionLogPanelEl = document.getElementById('executionLogPanel');
+    const taskIndicator = document.getElementById('taskIndicator');
+    const taskBadgeEl = document.getElementById('taskBadge');
+    const taskBadgeTextEl = document.getElementById('taskBadgeText');
+    const taskPanelEl = document.getElementById('taskPanel');
+    const taskListEl = document.getElementById('taskList');
     const contextBadgeEl = document.getElementById('contextBadge');
     const contextCompressionTextEl = document.getElementById('contextCompressionText');
     const contextRemainingTextEl = document.getElementById('contextRemainingText');
@@ -662,9 +857,11 @@
     const CHART_COLORS = ['#1f6feb', '#0ea5e9', '#0a7f47', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#84cc16', '#e11d48', '#06b6d4', '#4f46e5'];
     const CONVERSATION_STORAGE_KEY = 'chatbi_conversation_id';
     const LLM_PROVIDER_STORAGE_KEY = 'chatbi_llm_provider';
+    const CLIENT_ID_STORAGE_KEY = 'chatbi_client_id';
     const DEFAULT_LLM_PROVIDER = {{ default_llm_provider|tojson }};
 
     let conversationId = loadConversationId();
+    let clientId = loadClientId();
     let currentResultState = {
         columns: [],
         rows: [],
@@ -683,6 +880,9 @@
     };
     let pendingTimeRefinement = false;
     let reportTemplates = [];
+    let currentTaskItems = [];
+    let taskPanelOpen = false;
+    let taskPollTimer = null;
 
     function buildDefaultContextStats() {
         return {
@@ -706,6 +906,20 @@
 
     function loadConversationId() {
         return window.localStorage.getItem(CONVERSATION_STORAGE_KEY) || createConversationId();
+    }
+
+    function createClientId() {
+        return `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function loadClientId() {
+        const existing = window.localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+        if (existing) {
+            return existing;
+        }
+        const created = createClientId();
+        window.localStorage.setItem(CLIENT_ID_STORAGE_KEY, created);
+        return created;
     }
 
     function persistConversationId() {
@@ -885,6 +1099,103 @@
         updateExportButtons();
     }
 
+    function renderExecutionLogs(logs) {
+        if (!Array.isArray(logs) || logs.length === 0) {
+            executionLogPanelEl.innerHTML = '<span class="placeholder-line">-- 暂无执行日志</span>';
+            return;
+        }
+        executionLogPanelEl.innerHTML = logs.map((log, index) => `
+            <details class="log-item" ${index === logs.length - 1 ? 'open' : ''}>
+                <summary>
+                    <span>${escapeHtml(log.stage || '--')} / ${escapeHtml(log.llm_provider || '--')} / ${escapeHtml(log.model_name || '--')}</span>
+                    <span class="log-meta">${escapeHtml(log.created_at || '--')}</span>
+                </summary>
+                <div class="log-body">
+                    <div class="toolbar-tip">发送给模型的 JSON</div>
+                    <pre class="json-view">${syntaxHighlightJson(log.request_json || '{}')}</pre>
+                    ${log.response_json ? `
+                        <div class="toolbar-tip">模型返回</div>
+                        <pre class="json-view">${syntaxHighlightJson(log.response_json || '{}')}</pre>
+                    ` : ''}
+                    ${log.error_message ? `<div class="toolbar-tip" style="color:#c62828;">调用异常：${escapeHtml(log.error_message)}</div>` : ''}
+                </div>
+            </details>
+        `).join('');
+    }
+
+    async function loadExecutionLogs() {
+        if (!conversationId) {
+            renderExecutionLogs([]);
+            return;
+        }
+        const response = await fetch(`/api/conversation/${encodeURIComponent(conversationId)}/logs`);
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '加载执行日志失败');
+        }
+        renderExecutionLogs(data.logs || []);
+    }
+
+    function renderTaskWidget(tasks) {
+        currentTaskItems = Array.isArray(tasks) ? tasks : [];
+        const activeCount = currentTaskItems.filter(item => ['pending', 'running'].includes(item.status)).length;
+        const readyCount = currentTaskItems.filter(item => item.status === 'succeeded' && item.result && item.result.file_path).length;
+        taskBadgeEl.classList.toggle('has-active', activeCount > 0);
+        taskBadgeEl.classList.toggle('has-ready', readyCount > 0 && activeCount === 0);
+        taskBadgeTextEl.textContent = `下载任务 ${currentTaskItems.length}`;
+
+        if (!currentTaskItems.length) {
+            taskListEl.innerHTML = '<span class="placeholder-line">-- 暂无任务</span>';
+            return;
+        }
+
+        taskListEl.innerHTML = currentTaskItems.map(item => {
+            const result = item.result || {};
+            const canDownload = item.status === 'succeeded' && !!result.file_path;
+            const statusText = item.status === 'pending'
+                ? '排队中'
+                : item.status === 'running'
+                    ? `执行中 ${item.progress || 0}%`
+                    : item.status === 'succeeded'
+                        ? '已完成'
+                        : '失败';
+            return `
+                <div class="task-item">
+                    <div class="task-head">
+                        <div class="task-name">${escapeHtml(item.display_name || item.task_type || '任务')}</div>
+                        <span class="chip ${canDownload ? 'metric' : 'dimension'}">${escapeHtml(statusText)}</span>
+                    </div>
+                    <div class="task-meta">
+                        创建时间：${escapeHtml(item.created_at || '--')}<br>
+                        ${item.error_message ? `错误信息：${escapeHtml(item.error_message)}` : `任务类型：${escapeHtml(item.task_type || '--')}`}
+                    </div>
+                    <div class="task-actions">
+                        ${canDownload ? `<a class="secondary-btn" href="/api/tasks/${encodeURIComponent(item.task_id)}/download">下载文件</a>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function loadTaskWidget() {
+        const response = await fetch(`/api/tasks?client_id=${encodeURIComponent(clientId)}`);
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '加载任务列表失败');
+        }
+        renderTaskWidget(data.tasks || []);
+    }
+
+    function startTaskPolling() {
+        if (taskPollTimer) {
+            window.clearInterval(taskPollTimer);
+        }
+        loadTaskWidget().catch(() => {});
+        taskPollTimer = window.setInterval(() => {
+            loadTaskWidget().catch(() => {});
+        }, 4000);
+    }
+
     function setViewButtonState(button, enabled, active) {
         button.disabled = !enabled;
         button.classList.toggle('disabled', !enabled);
@@ -907,6 +1218,46 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&apos;');
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function syntaxHighlightJson(rawText) {
+        let formatted = rawText || '';
+        try {
+            formatted = JSON.stringify(JSON.parse(rawText || '{}'), null, 2);
+        } catch (error) {
+            formatted = String(rawText || '');
+        }
+        return escapeHtml(formatted).replace(
+            /(&quot;.*?&quot;)(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?/g,
+            match => {
+                if (/^&quot;.*&quot;$/.test(match) && match.endsWith('&quot;') && !match.endsWith('&quot;:')) {
+                    return `<span class=\"json-string\">${match}</span>`;
+                }
+                if (match.endsWith(':')) {
+                    const key = match.slice(0, -1);
+                    return `<span class=\"json-key\">${key}</span>:`;
+                }
+                if (match === 'true' || match === 'false') {
+                    return `<span class=\"json-boolean\">${match}</span>`;
+                }
+                if (match === 'null') {
+                    return `<span class=\"json-null\">${match}</span>`;
+                }
+                if (/^-?\d/.test(match)) {
+                    return `<span class=\"json-number\">${match}</span>`;
+                }
+                return `<span class=\"json-string\">${match}</span>`;
+            }
+        );
     }
 
     function compactSeries(items, maxItems = 12) {
@@ -1200,6 +1551,7 @@
         chatBox.innerHTML = '';
         questionInput.value = '';
         resetPanels();
+        renderExecutionLogs([]);
         addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
         setStatus('已开启新对话');
         updateSubmitButtonText();
@@ -1235,9 +1587,11 @@
                 updateContextIndicator(data.context_stats);
                 setStatus('已恢复会话');
             }
+            await loadExecutionLogs();
         } catch (error) {
             chatBox.innerHTML = '';
             resetPanels();
+            renderExecutionLogs([]);
             addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
             setStatus(`恢复历史会话失败：${error.message}`, 'error');
         }
@@ -1469,23 +1823,28 @@
             setStatus('当前没有可生成报告的查询结果', 'error');
             return;
         }
-        setStatus('正在调用模型生成商业分析报告，请选择保存位置...');
+        setStatus('报告生成任务已提交，完成后可在右下角下载任务中获取文件...');
         const chartImages = await buildChartImagesPayload();
-        await exportFile(
-            '/api/report/generate',
-            {
+        const response = await fetch('/api/report/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
                 conversation_id: conversationId,
                 template_id: getSelectedTemplateId(),
                 llm_provider: llmProviderSelect.value,
                 chart_images: chartImages,
-            },
-            'business_report.docx',
-            {
-                description: 'Word 文档',
-                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
-            },
-            '商业分析报告已生成'
-        );
+                client_id: clientId,
+                async: true,
+            }),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(data.error || '报告生成失败');
+        }
+        taskPanelOpen = true;
+        taskPanelEl.classList.add('open');
+        await loadTaskWidget();
+        setStatus(`报告任务已提交：${data.task?.display_name || '商业分析报告'}`, 'ok');
     }
 
     async function downloadTemplateSample() {
@@ -1534,6 +1893,7 @@
                     question,
                     conversation_id: conversationId,
                     llm_provider: llmProviderSelect.value,
+                    client_id: clientId,
                 })
             });
             const data = await readJsonResponse(response);
@@ -1552,14 +1912,17 @@
             if (data.reply_type === 'clarify') {
                 addMessage('assistant', data.assistant_message || '请补充更多信息。');
                 updateContextIndicator(data.context_stats);
+                await loadExecutionLogs();
                 setStatus(`需要你补充信息后再继续执行（引擎：${data.llm_provider_label || data.llm_provider} / 模型：${data.model}）`);
                 return;
             }
 
             applyResultPayload(data);
+            await loadExecutionLogs();
             setStatus(`执行成功，返回 ${data.row_count} 行（引擎：${data.llm_provider_label || data.llm_provider} / 模型：${data.model}）`, 'ok');
         } catch (error) {
             addMessage('assistant', `执行失败：${error.message}`);
+            loadExecutionLogs().catch(() => {});
             setStatus(`执行失败：${error.message}`, 'error');
         } finally {
             submitBtn.disabled = false;
@@ -1613,6 +1976,17 @@
         }
     });
     questionInput.addEventListener('input', updateSubmitButtonText);
+    taskBadgeEl.addEventListener('click', event => {
+        event.stopPropagation();
+        taskPanelOpen = !taskPanelOpen;
+        taskPanelEl.classList.toggle('open', taskPanelOpen);
+    });
+    document.addEventListener('click', event => {
+        if (!taskIndicator.contains(event.target)) {
+            taskPanelOpen = false;
+            taskPanelEl.classList.remove('open');
+        }
+    });
     llmProviderSelect.addEventListener('change', event => {
         persistLlmProvider(event.target.value);
         if (!currentResultState.rows.length) {
@@ -1632,6 +2006,12 @@
         } catch (error) {
             setStatus(`加载报告模板失败：${error.message}`, 'error');
         }
+        try {
+            await loadTaskWidget();
+        } catch (error) {
+            setStatus(`加载任务列表失败：${error.message}`, 'error');
+        }
+        startTaskPolling();
         await restoreConversation();
     }
 

@@ -689,6 +689,10 @@
         if (!response.ok) {
             throw new Error(data.error || '执行失败');
         }
+        if (data.async && data.task) {
+            setStatus(`任务已提交：${data.task.display_name}，请稍后重新加载查看结果。`, 'success');
+            return;
+        }
         const result = data.result || {};
         setStatus(`${successMessage} 文档数=${result.docs ?? '-'}，已刷新向量=${result.embeddings ?? 0}`, 'success');
         await loadBootstrap(false);
