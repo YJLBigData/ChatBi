@@ -67,6 +67,8 @@ def chat_completion(
     provider_name: str | None,
     conversation_id: str | None = None,
     client_id: str | None = None,
+    request_id: str | None = None,
+    round_no: int | None = None,
     temperature: float = 0,
 ) -> dict[str, Any]:
     runtime = get_llm_runtime(provider_name)
@@ -86,6 +88,8 @@ def chat_completion(
         insert_llm_invocation_log(
             conversation_id=conversation_id,
             client_id=client_id,
+            request_id=request_id,
+            round_no=round_no,
             stage=stage,
             llm_provider=runtime['provider'],
             model_name=runtime['model'],
@@ -103,6 +107,8 @@ def chat_completion(
         insert_llm_invocation_log(
             conversation_id=conversation_id,
             client_id=client_id,
+            request_id=request_id,
+            round_no=round_no,
             stage=stage,
             llm_provider=runtime['provider'],
             model_name=runtime['model'],

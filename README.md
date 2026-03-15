@@ -78,6 +78,8 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 会话持久化表会在应用启动时自动创建：
 - `chat_session`
 - `chat_message`
+- `async_task`
+- `llm_invocation_log`
 
 语义层元数据表也会自动创建并初始化：
 - `semantic_domain`
@@ -106,6 +108,12 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 python app.py
 ```
 
+异步任务独立 worker：
+
+```bash
+python worker.py
+```
+
 浏览器访问：
 - http://127.0.0.1:8000
 - 语义层后台：http://127.0.0.1:8000/admin/semantic
@@ -130,6 +138,8 @@ python app.py
 - 如果问题包含日期 / 月份 / 周范围，结果返回后可以直接调整范围并再次提问
 - 页面刷新后会自动恢复最近一次会话和结果快照
 - 页面右下角会显示上下文压缩量和当前模型剩余额度，鼠标悬停可查看详情
+- 页面右下角会显示下载任务悬浮球，报告生成和语义重建任务会异步执行
+- 执行日志支持按轮次过滤，并可折叠查看 prompt / response diff
 - 支持下载当前结果的明细 CSV，浏览器会优先弹出保存位置选择
 - 支持下载图表快照 Word，自动嵌入当前图表和结果表
 - 支持生成商业分析报告 Word，自动嵌入看板快照、关键发现、专业分析、策略建议和行动计划

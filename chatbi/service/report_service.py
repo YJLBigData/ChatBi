@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime
 from typing import Any, Callable
+from uuid import uuid4
 
 from chatbi.config import MAX_CONTEXT_SOURCE_MESSAGES, REPORT_PREVIEW_MAX_ROWS
 from chatbi.prompt.report_prompt import build_report_prompts
@@ -131,7 +132,16 @@ def generate_report_content_by_llm(
 ) -> dict[str, Any]:
     session_row = get_chat_session_row(conversation_id) or {}
     history_records = get_conversation_history_records(conversation_id, MAX_CONTEXT_SOURCE_MESSAGES)
-    context_bundle = build_context_bundle(conversation_id, history_records, llm_provider, client_id=client_id)
+    request_id = f'req_{uuid4().hex[:16]}'
+    round_no = int(latest_result.get('query_round_no') or 0) or None
+    context_bundle = build_context_bundle(
+        conversation_id,
+        history_records,
+        llm_provider,
+        client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
+    )
     rows = latest_result.get('rows', []) or []
     columns = latest_result.get('columns', []) or []
     preview_text = build_rows_preview(rows, columns)
@@ -146,6 +156,8 @@ def generate_report_content_by_llm(
         provider_name=llm_provider,
         conversation_id=conversation_id,
         client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
         temperature=0.2,
     )
     payload = extract_json_payload(response['content'])

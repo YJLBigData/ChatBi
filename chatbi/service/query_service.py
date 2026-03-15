@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from chatbi.config import ALLOWED_BASE_TABLES, MAX_CONTEXT_SOURCE_MESSAGES, MAX_RESULT_ROWS, QUERY_TIMEOUT_MS
 from chatbi.prompt.query_prompt import build_query_plan_prompts, build_sql_repair_prompts
@@ -9,6 +10,7 @@ from chatbi.repository.chat_repository import (
     append_conversation_message,
     ensure_chat_session,
     get_conversation_history_records,
+    infer_next_round_no_from_history,
     update_chat_session_context,
 )
 from chatbi.repository.db import get_db_conn
@@ -85,6 +87,8 @@ def generate_query_plan_by_llm(
     llm_provider: str,
     *,
     client_id: str | None = None,
+    request_id: str | None = None,
+    round_no: int | None = None,
 ) -> dict[str, Any]:
     llm_provider = normalize_llm_provider(llm_provider) or DEFAULT_PROVIDER
     llm_meta = get_llm_provider_meta(llm_provider)
@@ -92,7 +96,14 @@ def generate_query_plan_by_llm(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
     )
-    context_bundle = build_context_bundle(conversation_id, history_records, llm_provider, client_id=client_id)
+    context_bundle = build_context_bundle(
+        conversation_id,
+        history_records,
+        llm_provider,
+        client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
+    )
     system_prompt, user_prompt = build_query_plan_prompts(semantic_context['prompt_text'], context_bundle['history_text'], question)
     prompt_token_estimate = estimate_text_tokens(system_prompt) + estimate_text_tokens(user_prompt) + 24
     context_stats = normalize_context_stats(
@@ -116,6 +127,8 @@ def generate_query_plan_by_llm(
         provider_name=llm_provider,
         conversation_id=conversation_id,
         client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
         temperature=0,
     )
     payload = extract_json_payload(response['content'])
@@ -198,12 +211,21 @@ def repair_sql_by_llm(
     llm_provider: str,
     *,
     client_id: str | None = None,
+    request_id: str | None = None,
+    round_no: int | None = None,
 ) -> str:
     semantic_context = retrieve_semantic_context(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
     )
-    history_text = build_context_bundle(conversation_id, history_records, llm_provider, client_id=client_id)['history_text']
+    history_text = build_context_bundle(
+        conversation_id,
+        history_records,
+        llm_provider,
+        client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
+    )['history_text']
     system_prompt, user_prompt = build_sql_repair_prompts(semantic_context['prompt_text'], history_text, question, failed_sql, error_message)
     response = chat_completion(
         stage='sql_repair',
@@ -214,6 +236,8 @@ def repair_sql_by_llm(
         provider_name=llm_provider,
         conversation_id=conversation_id,
         client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
         temperature=0,
     )
     payload = extract_json_payload(response['content'])
@@ -232,12 +256,16 @@ def handle_user_query(
 ) -> dict[str, Any]:
     ensure_chat_session(conversation_id, title=question[:80])
     history_records = list(get_conversation_history_records(conversation_id, MAX_CONTEXT_SOURCE_MESSAGES))
+    round_no = infer_next_round_no_from_history(history_records)
+    request_id = f'req_{uuid4().hex[:16]}'
     llm_result = generate_query_plan_by_llm(
         conversation_id,
         question,
         history_records,
         llm_provider,
         client_id=client_id,
+        request_id=request_id,
+        round_no=round_no,
     )
     if llm_result['action'] == 'clarify':
         append_conversation_message(conversation_id, 'user', question)
@@ -263,6 +291,8 @@ def handle_user_query(
             str(query_exc),
             llm_result['llm_provider'],
             client_id=client_id,
+            request_id=request_id,
+            round_no=round_no,
         )
         sql = validate_and_normalize_sql(repaired_sql)
         columns, rows = run_query(sql)
@@ -287,6 +317,7 @@ def handle_user_query(
         'reply_type': 'result',
         'question': question,
         'asked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'query_round_no': round_no,
         'assistant_message': llm_result['assistant_message'],
         'metric_definition': llm_result['metric_definition'],
         'metric_description': llm_result['metric_description'],

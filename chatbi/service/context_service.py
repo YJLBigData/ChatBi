@@ -125,7 +125,15 @@ def normalize_context_stats(raw_stats: Any, llm_provider: str | None = None) -> 
     }
 
 
-def summarize_history_with_llm(existing_summary: str, records: list[dict[str, Any]], llm_provider: str, client_id: str | None = None, conversation_id: str | None = None) -> str:
+def summarize_history_with_llm(
+    existing_summary: str,
+    records: list[dict[str, Any]],
+    llm_provider: str,
+    client_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
+    round_no: int | None = None,
+) -> str:
     delta_text = format_history_lines([
         {'role': row['role'], 'content': row['content']} for row in records
     ])
@@ -140,6 +148,8 @@ def summarize_history_with_llm(existing_summary: str, records: list[dict[str, An
             provider_name=llm_provider,
             conversation_id=conversation_id,
             client_id=client_id,
+            request_id=request_id,
+            round_no=round_no,
             temperature=0.1,
         )
         normalized = normalize_summary_text(response['content'])
@@ -154,6 +164,8 @@ def build_context_bundle(
     llm_provider: str,
     *,
     client_id: str | None = None,
+    request_id: str | None = None,
+    round_no: int | None = None,
 ) -> dict[str, Any]:
     session_row = get_chat_session_row(conversation_id) or {}
     existing_summary = normalize_summary_text(session_row.get('context_summary') or '')
@@ -177,7 +189,15 @@ def build_context_bundle(
         if last_compacted_message_id:
             delta_records = [row for row in older_records if int(row.get('id') or 0) > int(last_compacted_message_id)]
         if delta_records:
-            summary_text = summarize_history_with_llm(summary_text, delta_records or older_records, llm_provider, client_id=client_id, conversation_id=conversation_id)
+            summary_text = summarize_history_with_llm(
+                summary_text,
+                delta_records or older_records,
+                llm_provider,
+                client_id=client_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                round_no=round_no,
+            )
             summary_updated = True
             summarized_count = len(older_records)
             last_compacted_message_id = int(older_records[-1]['id']) if older_records else last_compacted_message_id

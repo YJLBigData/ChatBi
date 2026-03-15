@@ -47,6 +47,8 @@ def normalize_chart_images(raw_items: Any) -> list[dict[str, str]]:
         return []
     normalized: list[dict[str, str]] = []
     for item in raw_items:
+        if len(normalized) >= 6:
+            break
         if not isinstance(item, dict):
             continue
         png_data_url = str(item.get('png_data_url', '')).strip()
@@ -60,6 +62,13 @@ def normalize_chart_images(raw_items: Any) -> list[dict[str, str]]:
             }
         )
     return normalized
+
+
+def ensure_existing_file(file_path: str) -> str:
+    normalized_path = str(file_path or '').strip()
+    if not normalized_path or not os.path.exists(normalized_path):
+        raise ValueError('文件不存在或已被清理，请重新生成')
+    return normalized_path
 
 
 @app.get('/')
@@ -203,7 +212,7 @@ def report_history_download_api(report_id: str):
         with get_db_conn() as conn:
             detail = get_report_history_file(conn, report_id)
         return send_file(
-            detail['file_path'],
+            ensure_existing_file(detail['file_path']),
             as_attachment=True,
             download_name=detail['file_name'],
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -333,9 +342,8 @@ def generate_report_api():
     async_mode = bool(payload.get('async', True))
     try:
         ensure_runtime_ready()
-        get_latest_result_or_raise(conversation_id)
+        latest_result = get_latest_result_or_raise(conversation_id)
         if async_mode:
-            latest_result = get_latest_result_or_raise(conversation_id)
             task = submit_task(
                 TASK_TYPE_REPORT_GENERATE,
                 build_report_task_display_name(latest_result),
@@ -374,6 +382,8 @@ def generate_report_api():
 def tasks_api():
     client_id = str(request.args.get('client_id', '')).strip()
     conversation_id = str(request.args.get('conversation_id', '')).strip()
+    if not client_id and not conversation_id:
+        return jsonify({'error': '请至少提供 client_id 或 conversation_id'}), 400
     try:
         ensure_runtime_ready()
         tasks = list_task_views(client_id=client_id, conversation_id=conversation_id)
@@ -407,7 +417,7 @@ def task_download_api(task_id: str):
         if task.get('status') != 'succeeded' or not file_path:
             return jsonify({'error': '任务尚未完成或没有可下载文件'}), 400
         return send_file(
-            file_path,
+            ensure_existing_file(file_path),
             as_attachment=True,
             download_name=file_name,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',

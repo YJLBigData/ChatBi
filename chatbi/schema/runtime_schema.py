@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS `async_task` (
     `display_name` VARCHAR(255) NOT NULL COMMENT '任务展示名称',
     `status` VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '任务状态',
     `progress` INT NOT NULL DEFAULT 0 COMMENT '任务进度',
+    `attempt_count` INT NOT NULL DEFAULT 0 COMMENT '执行次数',
+    `worker_id` VARCHAR(120) NULL COMMENT '当前工作进程',
+    `claim_token` VARCHAR(64) NULL COMMENT '抢占令牌',
+    `lease_expires_at` DATETIME NULL COMMENT '租约过期时间',
     `payload_json` LONGTEXT NULL COMMENT '任务入参JSON',
     `result_json` LONGTEXT NULL COMMENT '任务结果JSON',
     `error_message` LONGTEXT NULL COMMENT '失败原因',
@@ -45,6 +49,8 @@ CREATE TABLE IF NOT EXISTS `async_task` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`task_id`),
     KEY `idx_async_task_status` (`status`, `created_at`),
+    KEY `idx_async_task_claim_token` (`claim_token`),
+    KEY `idx_async_task_lease` (`status`, `lease_expires_at`),
     KEY `idx_async_task_client` (`client_id`, `created_at`),
     KEY `idx_async_task_conversation` (`conversation_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ChatBI异步任务表';
@@ -55,6 +61,8 @@ CREATE TABLE IF NOT EXISTS `llm_invocation_log` (
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '日志ID',
     `conversation_id` VARCHAR(80) NULL COMMENT '会话ID',
     `client_id` VARCHAR(80) NULL COMMENT '客户端ID',
+    `request_id` VARCHAR(64) NULL COMMENT '请求链路ID',
+    `round_no` INT NULL COMMENT '会话轮次',
     `stage` VARCHAR(64) NOT NULL COMMENT '调用阶段',
     `llm_provider` VARCHAR(32) NOT NULL COMMENT '模型引擎',
     `model_name` VARCHAR(128) NOT NULL COMMENT '模型名称',
@@ -64,6 +72,7 @@ CREATE TABLE IF NOT EXISTS `llm_invocation_log` (
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (`id`),
     KEY `idx_llm_log_conversation` (`conversation_id`, `created_at`),
+    KEY `idx_llm_log_round` (`conversation_id`, `round_no`, `created_at`),
     KEY `idx_llm_log_client` (`client_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ChatBI模型调用日志';
 """
@@ -79,4 +88,16 @@ CHAT_SESSION_MIGRATIONS = {
 
 CHAT_MESSAGE_MIGRATIONS = {
     'display_content': "ALTER TABLE `chat_message` ADD COLUMN `display_content` LONGTEXT NULL COMMENT '页面展示内容' AFTER `content`",
+}
+
+ASYNC_TASK_MIGRATIONS = {
+    'attempt_count': "ALTER TABLE `async_task` ADD COLUMN `attempt_count` INT NOT NULL DEFAULT 0 COMMENT '执行次数' AFTER `progress`",
+    'worker_id': "ALTER TABLE `async_task` ADD COLUMN `worker_id` VARCHAR(120) NULL COMMENT '当前工作进程' AFTER `attempt_count`",
+    'claim_token': "ALTER TABLE `async_task` ADD COLUMN `claim_token` VARCHAR(64) NULL COMMENT '抢占令牌' AFTER `worker_id`",
+    'lease_expires_at': "ALTER TABLE `async_task` ADD COLUMN `lease_expires_at` DATETIME NULL COMMENT '租约过期时间' AFTER `claim_token`",
+}
+
+LLM_INVOCATION_LOG_MIGRATIONS = {
+    'request_id': "ALTER TABLE `llm_invocation_log` ADD COLUMN `request_id` VARCHAR(64) NULL COMMENT '请求链路ID' AFTER `client_id`",
+    'round_no': "ALTER TABLE `llm_invocation_log` ADD COLUMN `round_no` INT NULL COMMENT '会话轮次' AFTER `request_id`",
 }

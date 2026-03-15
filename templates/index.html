@@ -605,6 +605,36 @@
             gap: 12px;
         }
 
+        .log-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .log-toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .log-toolbar label {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .log-toolbar select {
+            min-width: 180px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #fff;
+            font-size: 13px;
+        }
+
         .log-item {
             border: 1px solid var(--border);
             border-radius: 12px;
@@ -638,6 +668,13 @@
             padding: 0 14px 14px;
         }
 
+        .log-submeta {
+            margin-bottom: 12px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
         .json-view {
             background: #0b1220;
             color: #e5eefb;
@@ -667,6 +704,66 @@
 
         .json-null {
             color: #c4b5fd;
+        }
+
+        .diff-view {
+            margin-top: 10px;
+            border: 1px solid #dbe5f1;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .diff-row {
+            display: grid;
+            grid-template-columns: 48px 1fr 1fr;
+            gap: 0;
+            border-bottom: 1px solid #eef2f7;
+            font-family: "SFMono-Regular", "Consolas", monospace;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .diff-row:last-child {
+            border-bottom: none;
+        }
+
+        .diff-mark {
+            padding: 8px 10px;
+            color: var(--muted);
+            background: #f8fafc;
+            border-right: 1px solid #eef2f7;
+            text-align: center;
+            font-weight: 700;
+        }
+
+        .diff-col {
+            padding: 8px 10px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .diff-row.added .diff-col.right {
+            background: #ecfdf3;
+            color: #166534;
+        }
+
+        .diff-row.removed .diff-col.left {
+            background: #fef2f2;
+            color: #991b1b;
+        }
+
+        .diff-row.common .diff-col {
+            background: #f8fafc;
+            color: #475569;
+        }
+
+        .diff-empty {
+            padding: 12px;
+            color: var(--muted);
+            font-size: 12px;
+            background: #f8fafc;
+            border-radius: 10px;
         }
 
         @media (max-width: 768px) {
@@ -784,6 +881,15 @@
 
     <div class="card">
         <h3>执行日志</h3>
+        <div class="log-toolbar">
+            <div class="log-toolbar-left">
+                <label for="logRoundFilter">按轮次过滤</label>
+                <select id="logRoundFilter">
+                    <option value="all">全部轮次</option>
+                </select>
+            </div>
+            <button id="refreshLogBtn" class="secondary-btn" type="button">刷新日志</button>
+        </div>
         <div id="executionLogPanel" class="log-panel">
             <span class="placeholder-line">-- 暂无执行日志</span>
         </div>
@@ -843,6 +949,8 @@
     const downloadTemplateSampleBtn = document.getElementById('downloadTemplateSampleBtn');
     const uploadTemplateBtn = document.getElementById('uploadTemplateBtn');
     const reportTemplateFileInput = document.getElementById('reportTemplateFileInput');
+    const logRoundFilterEl = document.getElementById('logRoundFilter');
+    const refreshLogBtn = document.getElementById('refreshLogBtn');
     const executionLogPanelEl = document.getElementById('executionLogPanel');
     const taskIndicator = document.getElementById('taskIndicator');
     const taskBadgeEl = document.getElementById('taskBadge');
@@ -881,6 +989,7 @@
     let pendingTimeRefinement = false;
     let reportTemplates = [];
     let currentTaskItems = [];
+    let currentExecutionLogs = [];
     let taskPanelOpen = false;
     let taskPollTimer = null;
 
@@ -1100,22 +1209,31 @@
     }
 
     function renderExecutionLogs(logs) {
-        if (!Array.isArray(logs) || logs.length === 0) {
+        const filteredLogs = Array.isArray(logs) ? logs : [];
+        if (filteredLogs.length === 0) {
             executionLogPanelEl.innerHTML = '<span class="placeholder-line">-- 暂无执行日志</span>';
             return;
         }
-        executionLogPanelEl.innerHTML = logs.map((log, index) => `
-            <details class="log-item" ${index === logs.length - 1 ? 'open' : ''}>
+        executionLogPanelEl.innerHTML = filteredLogs.map((log, index) => `
+            <details class="log-item" ${index === filteredLogs.length - 1 ? 'open' : ''}>
                 <summary>
                     <span>${escapeHtml(log.stage || '--')} / ${escapeHtml(log.llm_provider || '--')} / ${escapeHtml(log.model_name || '--')}</span>
                     <span class="log-meta">${escapeHtml(log.created_at || '--')}</span>
                 </summary>
                 <div class="log-body">
+                    <div class="log-submeta">
+                        轮次：${escapeHtml(formatRoundLabel(log.round_no))}<br>
+                        请求链路：${escapeHtml(log.request_id || '--')}
+                    </div>
                     <div class="toolbar-tip">发送给模型的 JSON</div>
                     <pre class="json-view">${syntaxHighlightJson(log.request_json || '{}')}</pre>
                     ${log.response_json ? `
                         <div class="toolbar-tip">模型返回</div>
                         <pre class="json-view">${syntaxHighlightJson(log.response_json || '{}')}</pre>
+                        <details style="margin-top:10px;">
+                            <summary style="cursor:pointer;color:#1f6feb;font-size:12px;font-weight:700;">折叠查看 prompt / response diff</summary>
+                            ${buildJsonDiffHtml(log.request_json || '{}', log.response_json || '{}')}
+                        </details>
                     ` : ''}
                     ${log.error_message ? `<div class="toolbar-tip" style="color:#c62828;">调用异常：${escapeHtml(log.error_message)}</div>` : ''}
                 </div>
@@ -1125,6 +1243,8 @@
 
     async function loadExecutionLogs() {
         if (!conversationId) {
+            currentExecutionLogs = [];
+            renderLogRoundOptions([]);
             renderExecutionLogs([]);
             return;
         }
@@ -1133,7 +1253,106 @@
         if (!response.ok) {
             throw new Error(data.error || '加载执行日志失败');
         }
-        renderExecutionLogs(data.logs || []);
+        currentExecutionLogs = Array.isArray(data.logs) ? data.logs : [];
+        renderLogRoundOptions(currentExecutionLogs);
+        renderFilteredExecutionLogs();
+    }
+
+    function formatRoundLabel(roundNo) {
+        const value = Number(roundNo || 0);
+        return value > 0 ? `第${value}轮` : '系统轮次';
+    }
+
+    function renderLogRoundOptions(logs) {
+        const previousValue = logRoundFilterEl.value || 'all';
+        const rounds = Array.from(new Set((Array.isArray(logs) ? logs : []).map(item => Number(item.round_no || 0))));
+        rounds.sort((a, b) => a - b);
+        logRoundFilterEl.innerHTML = '<option value="all">全部轮次</option>' + rounds.map(roundNo => (
+            `<option value="${roundNo}">${escapeHtml(formatRoundLabel(roundNo))}</option>`
+        )).join('');
+        if (previousValue !== 'all' && rounds.includes(Number(previousValue))) {
+            logRoundFilterEl.value = previousValue;
+        }
+    }
+
+    function renderFilteredExecutionLogs() {
+        const filterValue = logRoundFilterEl.value || 'all';
+        const logs = filterValue === 'all'
+            ? currentExecutionLogs
+            : currentExecutionLogs.filter(item => Number(item.round_no || 0) === Number(filterValue));
+        renderExecutionLogs(logs);
+    }
+
+    function prettyJsonText(rawText) {
+        try {
+            return JSON.stringify(JSON.parse(rawText || '{}'), null, 2);
+        } catch (error) {
+            return String(rawText || '').trim();
+        }
+    }
+
+    function buildDiffRows(leftLines, rightLines) {
+        const maxCells = leftLines.length * rightLines.length;
+        if (maxCells > 40000) {
+            return [
+                ...leftLines.map(line => ({ type: 'removed', left: line, right: '' })),
+                ...rightLines.map(line => ({ type: 'added', left: '', right: line })),
+            ];
+        }
+        const dp = Array.from({ length: leftLines.length + 1 }, () => Array(rightLines.length + 1).fill(0));
+        for (let i = leftLines.length - 1; i >= 0; i -= 1) {
+            for (let j = rightLines.length - 1; j >= 0; j -= 1) {
+                if (leftLines[i] === rightLines[j]) {
+                    dp[i][j] = dp[i + 1][j + 1] + 1;
+                } else {
+                    dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+                }
+            }
+        }
+        const rows = [];
+        let i = 0;
+        let j = 0;
+        while (i < leftLines.length && j < rightLines.length) {
+            if (leftLines[i] === rightLines[j]) {
+                rows.push({ type: 'common', left: leftLines[i], right: rightLines[j] });
+                i += 1;
+                j += 1;
+            } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+                rows.push({ type: 'removed', left: leftLines[i], right: '' });
+                i += 1;
+            } else {
+                rows.push({ type: 'added', left: '', right: rightLines[j] });
+                j += 1;
+            }
+        }
+        while (i < leftLines.length) {
+            rows.push({ type: 'removed', left: leftLines[i], right: '' });
+            i += 1;
+        }
+        while (j < rightLines.length) {
+            rows.push({ type: 'added', left: '', right: rightLines[j] });
+            j += 1;
+        }
+        return rows;
+    }
+
+    function buildJsonDiffHtml(leftRaw, rightRaw) {
+        const leftText = prettyJsonText(leftRaw);
+        const rightText = prettyJsonText(rightRaw);
+        if (!rightText) {
+            return '<div class="diff-empty">-- 无模型返回内容</div>';
+        }
+        const rows = buildDiffRows(leftText.split('\n'), rightText.split('\n'));
+        if (!rows.length) {
+            return '<div class="diff-empty">-- 无差异</div>';
+        }
+        return `<div class="diff-view">${rows.map(row => `
+            <div class="diff-row ${row.type}">
+                <div class="diff-mark">${row.type === 'added' ? '+' : row.type === 'removed' ? '-' : '='}</div>
+                <div class="diff-col left">${escapeHtml(row.left || '')}</div>
+                <div class="diff-col right">${escapeHtml(row.right || '')}</div>
+            </div>
+        `).join('')}</div>`;
     }
 
     function renderTaskWidget(tasks) {
@@ -1170,11 +1389,19 @@
                         ${item.error_message ? `错误信息：${escapeHtml(item.error_message)}` : `任务类型：${escapeHtml(item.task_type || '--')}`}
                     </div>
                     <div class="task-actions">
-                        ${canDownload ? `<a class="secondary-btn" href="/api/tasks/${encodeURIComponent(item.task_id)}/download">下载文件</a>` : ''}
+                        ${canDownload ? `<button class="secondary-btn task-download-btn" type="button" data-task-id="${escapeHtml(item.task_id)}" data-file-name="${escapeHtml((result.download_name || item.display_name || 'task_result.docx'))}">下载文件</button>` : ''}
                     </div>
                 </div>
             `;
         }).join('');
+
+        Array.from(taskListEl.querySelectorAll('.task-download-btn')).forEach(button => {
+            button.addEventListener('click', () => {
+                downloadTaskFile(button.dataset.taskId, button.dataset.fileName).catch(error => {
+                    setStatus(`任务文件下载失败：${error.message}`, 'error');
+                });
+            });
+        });
     }
 
     async function loadTaskWidget() {
@@ -1551,6 +1778,8 @@
         chatBox.innerHTML = '';
         questionInput.value = '';
         resetPanels();
+        currentExecutionLogs = [];
+        renderLogRoundOptions([]);
         renderExecutionLogs([]);
         addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
         setStatus('已开启新对话');
@@ -1591,6 +1820,8 @@
         } catch (error) {
             chatBox.innerHTML = '';
             resetPanels();
+            currentExecutionLogs = [];
+            renderLogRoundOptions([]);
             renderExecutionLogs([]);
             addMessage('assistant', '可以直接提问。若口径不明确，我会继续追问。');
             setStatus(`恢复历史会话失败：${error.message}`, 'error');
@@ -1863,6 +2094,21 @@
         setStatus('报告模板样例已下载', 'ok');
     }
 
+    async function downloadTaskFile(taskId, fallbackName) {
+        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/download`);
+        const blob = await readBlobResponse(response);
+        const fileName = parseFileNameFromHeaders(response, fallbackName || 'task_result.docx');
+        await saveBlobWithPicker(
+            blob,
+            fileName,
+            {
+                description: 'Word 文档',
+                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+            }
+        );
+        setStatus(`任务文件已下载：${fileName}`, 'ok');
+    }
+
     async function runQuery() {
         let question = questionInput.value.trim();
         let displayQuestion = question;
@@ -1976,6 +2222,12 @@
         }
     });
     questionInput.addEventListener('input', updateSubmitButtonText);
+    logRoundFilterEl.addEventListener('change', renderFilteredExecutionLogs);
+    refreshLogBtn.addEventListener('click', () => {
+        loadExecutionLogs().catch(error => {
+            setStatus(`日志刷新失败：${error.message}`, 'error');
+        });
+    });
     taskBadgeEl.addEventListener('click', event => {
         event.stopPropagation();
         taskPanelOpen = !taskPanelOpen;

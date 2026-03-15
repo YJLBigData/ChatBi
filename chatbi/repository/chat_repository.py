@@ -112,6 +112,11 @@ def get_conversation_messages_for_ui(conversation_id: str) -> list[dict[str, str
     return [{'role': row['role'], 'content': row['display_content']} for row in rows]
 
 
+def infer_next_round_no_from_history(history_records: list[dict[str, Any]]) -> int:
+    user_message_count = sum(1 for row in history_records if row.get('role') == 'user')
+    return user_message_count + 1
+
+
 def append_conversation_message(
     conversation_id: str,
     role: str,

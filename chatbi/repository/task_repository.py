@@ -2,7 +2,14 @@ import json
 import uuid
 from typing import Any
 
-from chatbi.config import TASK_POLL_LIMIT, TASK_STATUS_FAILED, TASK_STATUS_PENDING, TASK_STATUS_RUNNING, TASK_STATUS_SUCCEEDED
+from chatbi.config import (
+    MAX_CLIENT_ID_LENGTH,
+    TASK_POLL_LIMIT,
+    TASK_STATUS_FAILED,
+    TASK_STATUS_PENDING,
+    TASK_STATUS_RUNNING,
+    TASK_STATUS_SUCCEEDED,
+)
 from chatbi.repository.chat_repository import normalize_conversation_id
 from chatbi.repository.db import get_db_conn
 
@@ -11,7 +18,14 @@ def normalize_client_id(raw_value: Any) -> str:
     text = str(raw_value or '').strip()
     if not text:
         return ''
-    return text[:80]
+    return text[:MAX_CLIENT_ID_LENGTH]
+
+
+def normalize_worker_id(raw_value: Any) -> str:
+    text = str(raw_value or '').strip()
+    if not text:
+        return ''
+    return text[:120]
 
 
 def _loads_json(raw_value: Any) -> dict[str, Any]:
@@ -35,6 +49,10 @@ def _normalize_task_row(row: dict[str, Any]) -> dict[str, Any]:
         'display_name': row.get('display_name') or '',
         'status': row.get('status') or '',
         'progress': int(row.get('progress') or 0),
+        'attempt_count': int(row.get('attempt_count') or 0),
+        'worker_id': row.get('worker_id') or '',
+        'claim_token': row.get('claim_token') or '',
+        'lease_expires_at': str(row.get('lease_expires_at') or ''),
         'payload': _loads_json(row.get('payload_json')),
         'result': _loads_json(row.get('result_json')),
         'error_message': row.get('error_message') or '',
@@ -108,23 +126,35 @@ def list_tasks(*, client_id: str | None = None, conversation_id: str | None = No
     return [_normalize_task_row(row) for row in rows]
 
 
-def list_pending_tasks(limit: int = 50) -> list[dict[str, Any]]:
+def requeue_expired_tasks(limit: int) -> int:
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT * FROM `async_task`
-                WHERE `status` IN (%s, %s)
-                ORDER BY `created_at` ASC
+                UPDATE `async_task`
+                SET `status` = %s,
+                    `worker_id` = NULL,
+                    `claim_token` = NULL,
+                    `lease_expires_at` = NULL,
+                    `updated_at` = NOW()
+                WHERE `status` = %s
+                  AND `lease_expires_at` IS NOT NULL
+                  AND `lease_expires_at` < NOW()
+                ORDER BY `updated_at` ASC
                 LIMIT %s
                 """,
                 (TASK_STATUS_PENDING, TASK_STATUS_RUNNING, int(limit)),
             )
-            rows = list(cursor.fetchall())
-    return [_normalize_task_row(row) for row in rows]
+            affected = cursor.rowcount
+        conn.commit()
+    return affected
 
 
-def mark_task_running(task_id: str) -> None:
+def claim_next_task(worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+    worker_id = normalize_worker_id(worker_id)
+    if not worker_id:
+        raise ValueError('worker_id 不能为空')
+    claim_token = uuid.uuid4().hex
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -132,16 +162,61 @@ def mark_task_running(task_id: str) -> None:
                 UPDATE `async_task`
                 SET `status` = %s,
                     `progress` = CASE WHEN `progress` < 5 THEN 5 ELSE `progress` END,
+                    `attempt_count` = `attempt_count` + 1,
+                    `worker_id` = %s,
+                    `claim_token` = %s,
+                    `error_message` = NULL,
+                    `finished_at` = NULL,
                     `started_at` = COALESCE(`started_at`, NOW()),
+                    `lease_expires_at` = DATE_ADD(NOW(), INTERVAL %s SECOND),
                     `updated_at` = NOW()
-                WHERE `task_id` = %s
+                WHERE `status` = %s
+                ORDER BY `created_at` ASC, `task_id` ASC
+                LIMIT 1
                 """,
-                (TASK_STATUS_RUNNING, task_id),
+                (TASK_STATUS_RUNNING, worker_id, claim_token, int(lease_seconds), TASK_STATUS_PENDING),
+            )
+            affected = cursor.rowcount
+            if not affected:
+                conn.commit()
+                return None
+            cursor.execute('SELECT * FROM `async_task` WHERE `claim_token` = %s LIMIT 1', (claim_token,))
+            row = cursor.fetchone()
+        conn.commit()
+    return _normalize_task_row(row) if row else None
+
+
+def heartbeat_task(task_id: str, worker_id: str, lease_seconds: int, progress: int | None = None, result: dict[str, Any] | None = None) -> None:
+    worker_id = normalize_worker_id(worker_id)
+    assignments = [
+        '`lease_expires_at` = DATE_ADD(NOW(), INTERVAL %s SECOND)',
+        '`updated_at` = NOW()',
+    ]
+    params: list[Any] = [int(lease_seconds)]
+    if progress is not None:
+        assignments.append('`progress` = %s')
+        params.append(max(0, min(100, int(progress))))
+    if result is not None:
+        assignments.append('`result_json` = %s')
+        params.append(json.dumps(result, ensure_ascii=False, default=str))
+    params.extend([task_id, worker_id])
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE `async_task`
+                SET {', '.join(assignments)}
+                WHERE `task_id` = %s AND `worker_id` = %s
+                """,
+                tuple(params),
             )
         conn.commit()
 
 
-def mark_task_progress(task_id: str, progress: int, result: dict[str, Any] | None = None) -> None:
+def mark_task_progress(task_id: str, progress: int, result: dict[str, Any] | None = None, *, worker_id: str | None = None, lease_seconds: int | None = None) -> None:
+    if worker_id and lease_seconds:
+        heartbeat_task(task_id, worker_id, lease_seconds, progress=progress, result=result)
+        return
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -170,6 +245,9 @@ def mark_task_succeeded(task_id: str, result: dict[str, Any]) -> None:
                 UPDATE `async_task`
                 SET `status` = %s,
                     `progress` = 100,
+                    `worker_id` = NULL,
+                    `claim_token` = NULL,
+                    `lease_expires_at` = NULL,
                     `result_json` = %s,
                     `error_message` = NULL,
                     `finished_at` = NOW(),
@@ -188,6 +266,9 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                 """
                 UPDATE `async_task`
                 SET `status` = %s,
+                    `worker_id` = NULL,
+                    `claim_token` = NULL,
+                    `lease_expires_at` = NULL,
                     `error_message` = %s,
                     `finished_at` = NOW(),
                     `updated_at` = NOW()
@@ -202,6 +283,8 @@ def insert_llm_invocation_log(
     *,
     conversation_id: str | None,
     client_id: str | None,
+    request_id: str | None,
+    round_no: int | None,
     stage: str,
     llm_provider: str,
     model_name: str,
@@ -216,12 +299,14 @@ def insert_llm_invocation_log(
             cursor.execute(
                 """
                 INSERT INTO `llm_invocation_log`
-                (`conversation_id`, `client_id`, `stage`, `llm_provider`, `model_name`, `request_json`, `response_json`, `error_message`)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (`conversation_id`, `client_id`, `request_id`, `round_no`, `stage`, `llm_provider`, `model_name`, `request_json`, `response_json`, `error_message`)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     normalized_conversation_id,
                     normalized_client_id or None,
+                    str(request_id or '').strip()[:64] or None,
+                    int(round_no) if round_no else None,
                     stage,
                     llm_provider,
                     model_name,
@@ -240,7 +325,7 @@ def list_llm_invocation_logs(conversation_id: str, limit: int = 200) -> list[dic
             cursor.execute(
                 """
                 SELECT `id`, `conversation_id`, `client_id`, `stage`, `llm_provider`, `model_name`,
-                       `request_json`, `response_json`, `error_message`, `created_at`
+                       `request_id`, `round_no`, `request_json`, `response_json`, `error_message`, `created_at`
                 FROM `llm_invocation_log`
                 WHERE `conversation_id` = %s
                 ORDER BY `id` DESC
@@ -257,6 +342,8 @@ def list_llm_invocation_logs(conversation_id: str, limit: int = 200) -> list[dic
                 'id': row['id'],
                 'conversation_id': row['conversation_id'],
                 'client_id': row.get('client_id') or '',
+                'request_id': row.get('request_id') or '',
+                'round_no': int(row.get('round_no') or 0),
                 'stage': row['stage'],
                 'llm_provider': row['llm_provider'],
                 'model_name': row['model_name'],

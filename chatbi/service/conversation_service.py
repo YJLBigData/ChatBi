@@ -41,6 +41,7 @@ def normalize_latest_result(raw_payload: Any) -> dict[str, Any]:
     normalized['columns'] = [str(item) for item in normalized.get('columns', [])] if isinstance(normalized.get('columns'), list) else []
     normalized['rows'] = normalized.get('rows', []) if isinstance(normalized.get('rows'), list) else []
     normalized['row_count'] = int(normalized.get('row_count') or len(normalized['rows']))
+    normalized['query_round_no'] = int(normalized.get('query_round_no') or 0)
     normalized['generated_sql'] = str(normalized.get('generated_sql', '')).strip()
     normalized['metric_definition'] = str(normalized.get('metric_definition', '')).strip()
     normalized['metric_description'] = str(normalized.get('metric_description', '')).strip()

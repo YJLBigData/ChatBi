@@ -1,16 +1,15 @@
-from typing import Any
-
 from chatbi.config import RUNTIME_BOOTSTRAP_LOCK_NAME
 from chatbi.repository.db import ensure_table_columns, get_db_conn
 from chatbi.schema.runtime_schema import (
     ASYNC_TASK_DDL,
+    ASYNC_TASK_MIGRATIONS,
     CHAT_MESSAGE_DDL,
     CHAT_MESSAGE_MIGRATIONS,
     CHAT_SESSION_DDL,
     CHAT_SESSION_MIGRATIONS,
     LLM_INVOCATION_LOG_DDL,
+    LLM_INVOCATION_LOG_MIGRATIONS,
 )
-from chatbi.service.task_service import start_task_workers
 from reporting import ensure_reporting_runtime
 from semantic_layer import ensure_semantic_runtime
 
@@ -36,7 +35,6 @@ def release_runtime_lock(conn) -> None:
 def ensure_runtime_ready() -> None:
     global RUNTIME_READY
     if RUNTIME_READY:
-        start_task_workers()
         return
     with get_db_conn() as conn:
         acquire_runtime_lock(conn)
@@ -48,10 +46,11 @@ def ensure_runtime_ready() -> None:
                 cursor.execute(LLM_INVOCATION_LOG_DDL)
                 ensure_table_columns(cursor, 'chat_session', CHAT_SESSION_MIGRATIONS)
                 ensure_table_columns(cursor, 'chat_message', CHAT_MESSAGE_MIGRATIONS)
+                ensure_table_columns(cursor, 'async_task', ASYNC_TASK_MIGRATIONS)
+                ensure_table_columns(cursor, 'llm_invocation_log', LLM_INVOCATION_LOG_MIGRATIONS)
                 ensure_reporting_runtime(conn)
             conn.commit()
             ensure_semantic_runtime(refresh_embeddings=False)
         finally:
             release_runtime_lock(conn)
     RUNTIME_READY = True
-    start_task_workers()
