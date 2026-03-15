@@ -9,8 +9,10 @@ from typing import Any
 
 import pymysql
 from docx import Document
+from docx.opc.exceptions import PackageNotFoundError
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
+from chatbi.repository.db import ensure_table_columns
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,9 +39,12 @@ CREATE TABLE IF NOT EXISTS `report_template` (
     `template_id` VARCHAR(80) NOT NULL COMMENT '模板ID',
     `template_name` VARCHAR(255) NOT NULL COMMENT '模板名称',
     `template_kind` VARCHAR(32) NOT NULL DEFAULT 'custom' COMMENT '模板类型',
+    `source_format` VARCHAR(16) NOT NULL DEFAULT 'docx' COMMENT '模板源格式',
     `file_name` VARCHAR(255) NOT NULL COMMENT '原始文件名',
     `file_path` VARCHAR(512) NOT NULL COMMENT '文件路径',
+    `template_prompt_text` LONGTEXT NULL COMMENT '模板提示词文本',
     `style_profile_json` LONGTEXT NULL COMMENT '样式画像',
+    `validation_summary_json` LONGTEXT NULL COMMENT '模板校验摘要',
     `placeholders_json` LONGTEXT NULL COMMENT '占位符列表',
     `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否默认模板',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -48,6 +53,12 @@ CREATE TABLE IF NOT EXISTS `report_template` (
     KEY `idx_report_template_updated_at` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ChatBI报告模板表';
 """
+
+REPORT_TEMPLATE_MIGRATIONS = {
+    'source_format': "ALTER TABLE `report_template` ADD COLUMN `source_format` VARCHAR(16) NOT NULL DEFAULT 'docx' COMMENT '模板源格式' AFTER `template_kind`",
+    'template_prompt_text': "ALTER TABLE `report_template` ADD COLUMN `template_prompt_text` LONGTEXT NULL COMMENT '模板提示词文本' AFTER `file_path`",
+    'validation_summary_json': "ALTER TABLE `report_template` ADD COLUMN `validation_summary_json` LONGTEXT NULL COMMENT '模板校验摘要' AFTER `style_profile_json`",
+}
 
 REPORT_HISTORY_DDL = """
 CREATE TABLE IF NOT EXISTS `report_history` (
@@ -84,6 +95,7 @@ def ensure_reporting_runtime(conn: pymysql.connections.Connection) -> None:
     with conn.cursor() as cursor:
         cursor.execute(REPORT_TEMPLATE_DDL)
         cursor.execute(REPORT_HISTORY_DDL)
+        ensure_table_columns(cursor, 'report_template', REPORT_TEMPLATE_MIGRATIONS)
     seed_builtin_templates(conn)
 
 def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
@@ -117,7 +129,10 @@ def seed_builtin_templates(conn: pymysql.connections.Connection) -> None:
             template_kind=template["template_kind"],
             file_name=path.name,
             file_path=str(path),
+            source_format='docx',
+            template_prompt_text=metadata["template_prompt_text"],
             style_profile=metadata["style_profile"],
+            validation_summary=metadata["validation_summary"],
             placeholders=metadata["placeholders"],
             is_default=template["is_default"],
         )
@@ -131,7 +146,10 @@ def upsert_template_record(
     template_kind: str,
     file_name: str,
     file_path: str,
+    source_format: str,
+    template_prompt_text: str,
     style_profile: dict[str, Any],
+    validation_summary: dict[str, Any],
     placeholders: list[str],
     is_default: bool,
 ) -> None:
@@ -139,15 +157,18 @@ def upsert_template_record(
         cursor.execute(
             """
             INSERT INTO `report_template`
-            (`template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
-             `style_profile_json`, `placeholders_json`, `is_default`)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (`template_id`, `template_name`, `template_kind`, `source_format`, `file_name`, `file_path`,
+             `template_prompt_text`, `style_profile_json`, `validation_summary_json`, `placeholders_json`, `is_default`)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 `template_name` = VALUES(`template_name`),
                 `template_kind` = VALUES(`template_kind`),
+                `source_format` = VALUES(`source_format`),
                 `file_name` = VALUES(`file_name`),
                 `file_path` = VALUES(`file_path`),
+                `template_prompt_text` = VALUES(`template_prompt_text`),
                 `style_profile_json` = VALUES(`style_profile_json`),
+                `validation_summary_json` = VALUES(`validation_summary_json`),
                 `placeholders_json` = VALUES(`placeholders_json`),
                 `is_default` = VALUES(`is_default`),
                 `updated_at` = NOW()
@@ -156,9 +177,12 @@ def upsert_template_record(
                 template_id,
                 template_name,
                 template_kind,
+                source_format,
                 file_name,
                 file_path,
+                template_prompt_text,
                 json.dumps(style_profile, ensure_ascii=False),
+                json.dumps(validation_summary, ensure_ascii=False),
                 json.dumps(placeholders, ensure_ascii=False),
                 int(is_default),
             ),
@@ -244,9 +268,15 @@ def create_china_general_template_file(path: Path) -> None:
 
 def parse_template_file(file_path: str | Path) -> dict[str, Any]:
     path = Path(file_path)
-    document = Document(path)
+    try:
+        document = Document(path)
+    except (PackageNotFoundError, KeyError, ValueError) as exc:
+        raise ValueError('格式检索失败：无法识别为有效的 Word 报告模板，请上传标准 .docx 文件') from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError('格式检索失败：无法识别为有效的 Word 报告模板，请上传标准 .docx 文件') from exc
     style_names = {style.name for style in document.styles if getattr(style, "name", "")}
     placeholders = extract_placeholders(document)
+    template_prompt_text = document_to_markdown_text(document)
     style_profile = {
         "title_style": pick_style_name(style_names, ["Title", "标题"]),
         "subtitle_style": pick_style_name(style_names, ["Subtitle", "副标题", "Normal"]),
@@ -256,9 +286,12 @@ def parse_template_file(file_path: str | Path) -> dict[str, Any]:
         "bullet_style": pick_style_name(style_names, ["List Bullet", "项目符号", "Normal"]),
         "table_style": pick_table_style(document),
     }
+    validation_summary = validate_docx_template(document, placeholders, template_prompt_text)
     return {
         "style_profile": style_profile,
         "placeholders": placeholders,
+        "template_prompt_text": template_prompt_text,
+        "validation_summary": validation_summary,
         "file_name": path.name,
     }
 
@@ -297,12 +330,115 @@ def pick_table_style(document: Document) -> str:
     return pick_style_name(style_names, ["Table Grid", "网格型"])
 
 
+def paragraph_to_markdown(paragraph: Any) -> str:
+    text = str(paragraph.text or '').strip()
+    if not text:
+        return ''
+    style_name = getattr(getattr(paragraph, 'style', None), 'name', '') or ''
+    lower_style = style_name.lower()
+    if 'heading 1' in lower_style or style_name.startswith('标题 1'):
+        return f'# {text}'
+    if 'heading 2' in lower_style or style_name.startswith('标题 2'):
+        return f'## {text}'
+    if 'heading 3' in lower_style or style_name.startswith('标题 3'):
+        return f'### {text}'
+    if 'list bullet' in lower_style or '项目符号' in style_name:
+        return f'- {text}'
+    return text
+
+
+def document_to_markdown_text(document: Document) -> str:
+    lines: list[str] = []
+    for paragraph in document.paragraphs:
+        line = paragraph_to_markdown(paragraph)
+        if line:
+            lines.append(line)
+    for table in document.tables:
+        for row in table.rows:
+            row_text = ' | '.join(str(cell.text or '').strip() for cell in row.cells if str(cell.text or '').strip())
+            if row_text:
+                lines.append(f'| {row_text} |')
+    return '\n'.join(lines).strip()
+
+
+def validate_report_prompt_text(text: str) -> dict[str, Any]:
+    normalized = str(text or '').strip()
+    if not normalized:
+        raise ValueError('文件内容问题：报告模板内容为空，无法作为正常的报告输出模板')
+    keyword_groups = ['摘要', '分析', '建议', '策略', '风险', '行动', '结论', '管理层', '看板', '复盘', '经营']
+    hit_keywords = [keyword for keyword in keyword_groups if keyword in normalized]
+    structural_hits = sum(
+        1 for pattern in [r'(^|\n)\s*[一二三四五六七八九十]\s*[、.]', r'(^|\n)\s*#', r'\{\{[^{}]+\}\}', r'(^|\n)\s*[-*]\s+']
+        if re.search(pattern, normalized, re.MULTILINE)
+    )
+    line_count = len([line for line in normalized.splitlines() if line.strip()])
+    if len(normalized) < 80 or len(hit_keywords) < 3 or (structural_hits == 0 and line_count < 5):
+        raise ValueError('文件内容问题：未识别到完整的商业报告结构，至少应包含摘要/分析/建议/风险等报告要素')
+    return {
+        'content_length': len(normalized),
+        'line_count': line_count,
+        'keyword_hits': hit_keywords,
+        'structural_hits': structural_hits,
+        'recognized': True,
+    }
+
+
+def validate_docx_template(document: Document, placeholders: list[str], markdown_text: str) -> dict[str, Any]:
+    validation_summary = validate_report_prompt_text(markdown_text)
+    heading_count = sum(
+        1 for paragraph in document.paragraphs
+        if ('heading' in (getattr(getattr(paragraph, 'style', None), 'name', '') or '').lower()) or (getattr(getattr(paragraph, 'style', None), 'name', '') or '').startswith('标题')
+    )
+    paragraph_count = len([paragraph for paragraph in document.paragraphs if str(paragraph.text or '').strip()])
+    if heading_count == 0 and len(placeholders) < 2 and paragraph_count < 6:
+        raise ValueError('格式检索失败：未识别到标题层级、占位符或章节结构，无法作为有效的 Word 报告模板')
+    validation_summary.update(
+        {
+            'heading_count': heading_count,
+            'paragraph_count': paragraph_count,
+            'placeholder_count': len(placeholders),
+            'recognized': True,
+        }
+    )
+    return validation_summary
+
+
+def parse_text_template_file(file_path: str | Path) -> dict[str, Any]:
+    path = Path(file_path)
+    try:
+        raw_text = path.read_text(encoding='utf-8')
+    except UnicodeDecodeError:
+        try:
+            raw_text = path.read_text(encoding='utf-8-sig')
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError('文件内容问题：文本模板编码无法识别，请使用 UTF-8 编码') from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f'文件内容问题：文本模板读取失败，{exc}') from exc
+    placeholders = re.findall(r'\{\{[^{}]+\}\}', raw_text)
+    validation_summary = validate_report_prompt_text(raw_text)
+    return {
+        'style_profile': {
+            'title_style': 'Title',
+            'subtitle_style': 'Subtitle',
+            'heading_1_style': 'Heading 1',
+            'heading_2_style': 'Heading 2',
+            'body_style': 'Normal',
+            'bullet_style': 'List Bullet',
+            'table_style': 'Table Grid',
+        },
+        'placeholders': list(dict.fromkeys(placeholders)),
+        'template_prompt_text': raw_text.strip(),
+        'validation_summary': validation_summary,
+        'file_name': path.name,
+    }
+
+
 def list_report_templates(conn: pymysql.connections.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT `template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
-                   `style_profile_json`, `placeholders_json`, `is_default`, `updated_at`
+            SELECT `template_id`, `template_name`, `template_kind`, `source_format`, `file_name`, `file_path`,
+                   `template_prompt_text`, `style_profile_json`, `validation_summary_json`, `placeholders_json`, `is_default`, `updated_at`
             FROM `report_template`
             ORDER BY `is_default` DESC, `updated_at` DESC
             """
@@ -318,9 +454,12 @@ def list_report_templates(conn: pymysql.connections.Connection) -> list[dict[str
                 "template_id": row["template_id"],
                 "template_name": row["template_name"],
                 "template_kind": row["template_kind"],
+                "source_format": row.get("source_format") or 'docx',
                 "file_name": row["file_name"],
+                "template_prompt_text": row.get("template_prompt_text") or '',
                 "is_default": bool(row["is_default"]),
                 "style_profile": safe_json_dict(row.get("style_profile_json")),
+                "validation_summary": safe_json_dict(row.get("validation_summary_json")),
                 "placeholders": safe_json_list(row.get("placeholders_json")),
                 "updated_at": str(row["updated_at"]),
             }
@@ -333,8 +472,8 @@ def get_report_template(conn: pymysql.connections.Connection, template_id: str |
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT `template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
-                       `style_profile_json`, `placeholders_json`, `is_default`
+                SELECT `template_id`, `template_name`, `template_kind`, `source_format`, `file_name`, `file_path`,
+                       `template_prompt_text`, `style_profile_json`, `validation_summary_json`, `placeholders_json`, `is_default`
                 FROM `report_template`
                 WHERE `template_id` = %s
                 """,
@@ -346,9 +485,12 @@ def get_report_template(conn: pymysql.connections.Connection, template_id: str |
                 "template_id": row["template_id"],
                 "template_name": row["template_name"],
                 "template_kind": row["template_kind"],
+                "source_format": row.get("source_format") or 'docx',
                 "file_name": row["file_name"],
                 "file_path": row["file_path"],
+                "template_prompt_text": row.get("template_prompt_text") or '',
                 "style_profile": safe_json_dict(row.get("style_profile_json")),
+                "validation_summary": safe_json_dict(row.get("validation_summary_json")),
                 "placeholders": safe_json_list(row.get("placeholders_json")),
                 "is_default": bool(row["is_default"]),
             }
@@ -356,8 +498,8 @@ def get_report_template(conn: pymysql.connections.Connection, template_id: str |
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT `template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
-                   `style_profile_json`, `placeholders_json`, `is_default`
+            SELECT `template_id`, `template_name`, `template_kind`, `source_format`, `file_name`, `file_path`,
+                   `template_prompt_text`, `style_profile_json`, `validation_summary_json`, `placeholders_json`, `is_default`
             FROM `report_template`
             WHERE `is_default` = 1
             ORDER BY `updated_at` DESC
@@ -371,9 +513,12 @@ def get_report_template(conn: pymysql.connections.Connection, template_id: str |
         "template_id": row["template_id"],
         "template_name": row["template_name"],
         "template_kind": row["template_kind"],
+        "source_format": row.get("source_format") or 'docx',
         "file_name": row["file_name"],
         "file_path": row["file_path"],
+        "template_prompt_text": row.get("template_prompt_text") or '',
         "style_profile": safe_json_dict(row.get("style_profile_json")),
+        "validation_summary": safe_json_dict(row.get("validation_summary_json")),
         "placeholders": safe_json_list(row.get("placeholders_json")),
         "is_default": bool(row["is_default"]),
     }
@@ -381,39 +526,58 @@ def get_report_template(conn: pymysql.connections.Connection, template_id: str |
 
 def save_uploaded_template(conn: pymysql.connections.Connection, file_storage: Any) -> dict[str, Any]:
     original_name = str(getattr(file_storage, "filename", "") or "").strip()
-    if not original_name.lower().endswith(".docx"):
-        raise ValueError("只支持上传 .docx 报告模板")
+    lower_name = original_name.lower()
+    if not (lower_name.endswith(".docx") or lower_name.endswith(".txt") or lower_name.endswith(".md")):
+        raise ValueError("只支持上传 .docx / .txt / .md 报告模板")
 
     safe_name = sanitize_filename(original_name)
     template_id = f"tpl_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
     target_path = REPORT_TEMPLATE_DIR / f"{template_id}_{safe_name}"
     file_storage.save(target_path)
-
-    metadata = parse_template_file(target_path)
-    template_name = target_path.stem.replace("_", " ")
-    with conn.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO `report_template`
-            (`template_id`, `template_name`, `template_kind`, `file_name`, `file_path`,
-             `style_profile_json`, `placeholders_json`, `is_default`)
-            VALUES (%s, %s, 'custom', %s, %s, %s, %s, 0)
-            """,
-            (
-                template_id,
-                template_name,
-                original_name,
-                str(target_path),
-                json.dumps(metadata["style_profile"], ensure_ascii=False),
-                json.dumps(metadata["placeholders"], ensure_ascii=False),
-            ),
-        )
+    try:
+        if lower_name.endswith('.docx'):
+            metadata = parse_template_file(target_path)
+            source_format = 'docx'
+        else:
+            metadata = parse_text_template_file(target_path)
+            source_format = 'txt'
+        template_name = target_path.stem.replace("_", " ")
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO `report_template`
+                (`template_id`, `template_name`, `template_kind`, `source_format`, `file_name`, `file_path`,
+                 `template_prompt_text`, `style_profile_json`, `validation_summary_json`, `placeholders_json`, `is_default`)
+                VALUES (%s, %s, 'custom', %s, %s, %s, %s, %s, %s, %s, 0)
+                """,
+                (
+                    template_id,
+                    template_name,
+                    source_format,
+                    original_name,
+                    str(target_path),
+                    metadata["template_prompt_text"],
+                    json.dumps(metadata["style_profile"], ensure_ascii=False),
+                    json.dumps(metadata["validation_summary"], ensure_ascii=False),
+                    json.dumps(metadata["placeholders"], ensure_ascii=False),
+                ),
+            )
+    except Exception:
+        if target_path.exists():
+            try:
+                target_path.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
     return {
         "template_id": template_id,
         "template_name": template_name,
         "template_kind": "custom",
+        "source_format": source_format,
         "file_name": original_name,
+        "template_prompt_text": metadata["template_prompt_text"],
         "style_profile": metadata["style_profile"],
+        "validation_summary": metadata["validation_summary"],
         "placeholders": metadata["placeholders"],
         "is_default": False,
     }
@@ -460,6 +624,54 @@ def delete_report_template(conn: pymysql.connections.Connection, template_id: st
 def sanitize_filename(name: str) -> str:
     base_name = re.sub(r"[^\w\-.]+", "_", name.strip())
     return base_name or "report_template.docx"
+
+
+def build_template_markdown_text(template_row: dict[str, Any]) -> str:
+    source_format = str(template_row.get('source_format') or 'docx').lower()
+    template_prompt_text = str(template_row.get('template_prompt_text') or '').strip()
+    if source_format in {'txt', 'md'} and template_prompt_text:
+        return template_prompt_text
+    file_path = Path(template_row.get('file_path') or '')
+    if file_path.suffix.lower() == '.docx' and file_path.exists():
+        try:
+            return document_to_markdown_text(Document(file_path))
+        except Exception:  # noqa: BLE001
+            pass
+    return template_prompt_text
+
+
+def export_template_sample_bytes(template_row: dict[str, Any], sample_format: str) -> tuple[bytes, str, str]:
+    normalized_format = str(sample_format or 'docx').strip().lower()
+    if normalized_format == 'docx':
+        file_path = Path(template_row.get('file_path') or '')
+        if file_path.suffix.lower() != '.docx':
+            document = Document()
+            create_text_prompt_template_docx(document, template_row)
+            return (
+                save_document_to_bytes(document),
+                f"{sanitize_filename(Path(template_row.get('file_name') or 'report_template').stem)}.docx",
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            )
+        return (
+            file_path.read_bytes(),
+            template_row.get('file_name') or file_path.name,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+
+    markdown_text = build_template_markdown_text(template_row) or '# 报告模板\n\n暂无模板内容。'
+    file_base = sanitize_filename(Path(template_row.get('file_name') or 'report_template').stem)
+    return markdown_text.encode('utf-8'), f'{file_base}.txt', 'text/plain'
+
+
+def create_text_prompt_template_docx(document: Document, template_row: dict[str, Any]) -> None:
+    title = document.add_paragraph(style='Title')
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.add_run(template_row.get('template_name') or '报告模板')
+    subtitle = document.add_paragraph(style='Subtitle')
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle.add_run('该模板来自文本提示词，系统已自动生成可编辑的 Word 版本')
+    for chunk in split_paragraphs(build_template_markdown_text(template_row)):
+        document.add_paragraph(chunk, style='Normal')
 
 
 def build_report_output_name(report_id: str, download_name: str) -> str:
@@ -611,6 +823,9 @@ def build_management_report_docx(
 
 def prepare_document(template_row: dict[str, Any]) -> Document:
     path = Path(template_row["file_path"])
+    if path.suffix.lower() != '.docx' or not path.exists():
+        document = Document()
+        return document
     document = Document(path)
     clear_document_body(document)
     return document

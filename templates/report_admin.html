@@ -329,7 +329,7 @@
         </div>
     </div>
 
-    <input id="templateFileInput" type="file" accept=".docx" hidden>
+    <input id="templateFileInput" type="file" accept=".docx,.txt,.md,text/plain,text/markdown" hidden>
     <div id="status" class="status">等待加载...</div>
 </div>
 
@@ -389,24 +389,31 @@
         templateTableBodyEl.innerHTML = templateState.map(template => {
             const tags = [
                 template.is_default ? '<span class="tag default">默认</span>' : '',
-                `<span class="tag">${escapeHtml(template.template_kind)}</span>`
+                `<span class="tag">${escapeHtml(template.template_kind)}</span>`,
+                `<span class="tag muted">${escapeHtml(template.source_format || 'docx')}</span>`
             ].join('');
             const placeholders = (template.placeholders || []).slice(0, 4).map(item => `<span class="tag muted">${escapeHtml(item)}</span>`).join('') || '<span class="placeholder">无占位符样例</span>';
             const deleteBtn = template.template_kind === 'custom'
                 ? `<button class="danger" data-action="delete-template" data-template-id="${escapeHtml(template.template_id)}">删除</button>`
                 : '';
+            const validation = template.validation_summary || {};
+            const validationText = validation.recognized
+                ? `识别成功 / 关键字=${escapeHtml((validation.keyword_hits || []).join('、') || '--')}`
+                : '未识别';
             return `
                 <tr>
                     <td>
                         <div><strong>${escapeHtml(template.template_name)}</strong></div>
                         <div class="placeholder">${escapeHtml(template.file_name)}</div>
+                        <div class="placeholder">${validationText}</div>
                     </td>
                     <td>${tags}</td>
                     <td>${placeholders}</td>
                     <td>${escapeHtml(template.updated_at || '--')}</td>
                     <td>
                         <div class="inline-actions">
-                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample">下载样例</a>
+                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample?format=docx">下载Word</a>
+                            <a class="button secondary" href="/api/report/templates/${encodeURIComponent(template.template_id)}/sample?format=txt">下载Markdown</a>
                             <button class="secondary" data-action="set-default" data-template-id="${escapeHtml(template.template_id)}" ${template.is_default ? 'disabled' : ''}>设为默认</button>
                             ${deleteBtn}
                         </div>
@@ -603,6 +610,7 @@
             throw new Error(data.error || '上传模板失败');
         }
         renderTemplates(data.templates || []);
+        return data.message || '上传成功';
     }
 
     document.addEventListener('click', event => {
@@ -653,7 +661,7 @@
         }
         setStatus('正在上传并解析模板...');
         uploadTemplate(file)
-            .then(() => setStatus('模板上传成功', 'ok'))
+            .then(message => setStatus(message || '模板上传成功', 'ok'))
             .catch(error => setStatus(`模板上传失败：${error.message}`, 'error'))
             .finally(() => {
                 templateFileInput.value = '';

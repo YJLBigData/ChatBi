@@ -22,6 +22,7 @@
 - 结果支持列表 / 柱图 / 饼图切换展示
 - 支持下载当前查询明细数据 CSV，并可导出图表快照 Word
 - 支持生成管理层商业分析报告 Word，默认提供专业报告模板，并支持上传自定义 `.docx` 模板样例解析样式
+- 支持上传 `.docx / .txt / .md` 报告模板，自动校验模板结构或提示词内容是否合法
 
 ## 1. 环境准备
 
@@ -139,11 +140,12 @@ python worker.py
 - 页面刷新后会自动恢复最近一次会话和结果快照
 - 页面右下角会显示上下文压缩量和当前模型剩余额度，鼠标悬停可查看详情
 - 页面右下角会显示下载任务悬浮球，报告生成和语义重建任务会异步执行
-- 执行日志支持按轮次过滤，并可折叠查看 prompt / response diff
+- 执行日志支持按轮次过滤、只看失败调用、导出 JSON，并可折叠查看 prompt / response diff
 - 支持下载当前结果的明细 CSV，浏览器会优先弹出保存位置选择
 - 支持下载图表快照 Word，自动嵌入当前图表和结果表
 - 支持生成商业分析报告 Word，自动嵌入看板快照、关键发现、专业分析、策略建议和行动计划
 - 支持上传自定义 `.docx` 报告模板样例，系统会自动解析标题、正文、列表和表格样式
+- 支持上传 `.txt / .md` 报告模板提示词文件，只要内容能构成正常商业分析报告要求，也可以直接作为模板使用
 - 每次生成商业报告都会自动入库，并将 Word 文件保存到 `report_outputs/`
 
 导出与报告建议：
@@ -157,7 +159,7 @@ python worker.py
 
 后台维护页支持：
 - 查看全部报告模板
-- 上传自定义 `.docx` 模板
+- 上传自定义 `.docx / .txt / .md` 模板
 - 切换默认模板
 - 删除自定义模板
 - 查看报告生成历史
@@ -166,9 +168,37 @@ python worker.py
 
 维护建议：
 - 预置模板只建议下载和设为默认，不建议改名或手工替换文件
-- 自定义模板上传后会自动解析样式，建议模板中保留清晰的标题、正文、列表和表格结构
+- Word 模板上传后会自动校验标题、章节、占位符和样式结构；如果无法识别，会直接返回“格式检索失败”
+- 文本模板上传后会自动校验是否包含摘要、分析、建议、风险等报告要素；如果内容不足，会直接返回“文件内容问题”
+- 默认模板支持下载 Word 样例，也支持转换为 Markdown TXT 样例后再做自定义处理
 - 历史报告文件默认保存在 `report_outputs/`，可按需做定期清理或归档
 - 如果需要给管理层长期留档，建议同时把生成记录同步到对象存储或归档盘
+
+## 6.1 Worker 守护
+
+项目已提供两套独立 worker 守护样例：
+- `deploy/systemd/chatbi-worker.service`
+- `deploy/supervisor/chatbi-worker.conf`
+
+如果使用 `systemd`：
+
+```bash
+sudo cp deploy/systemd/chatbi-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable chatbi-worker
+sudo systemctl start chatbi-worker
+sudo systemctl status chatbi-worker
+```
+
+如果使用 `supervisor`：
+
+```bash
+sudo mkdir -p /Users/yangjinlong/app/PythonProject/ChatBiTest/logs
+sudo cp deploy/supervisor/chatbi-worker.conf /etc/supervisor/conf.d/
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status chatbi-worker
+```
 
 ## 7. 测试样例
 

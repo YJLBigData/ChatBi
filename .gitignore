@@ -8,3 +8,4 @@ report_templates/*
 !report_templates/default_management_report_template.docx
 !report_templates/china_general_business_report_template.docx
 report_outputs/
+logs/

@@ -862,6 +862,13 @@
                 <label for="reportTemplateSelect">报告模板</label>
                 <select id="reportTemplateSelect"></select>
             </div>
+            <div class="toolbar-field">
+                <label for="templateSampleFormatSelect">模板样例格式</label>
+                <select id="templateSampleFormatSelect">
+                    <option value="docx">Word</option>
+                    <option value="txt">Markdown TXT</option>
+                </select>
+            </div>
         </div>
         <div class="report-actions">
             <button id="downloadDataBtn" class="secondary-btn" disabled>下载明细数据</button>
@@ -870,8 +877,8 @@
             <button id="downloadTemplateSampleBtn" class="secondary-btn">下载模板样例</button>
             <button id="uploadTemplateBtn" class="secondary-btn">上传自定义模板</button>
         </div>
-        <div class="toolbar-tip">支持上传 .docx 报告模板样例文件。系统会自动解析标题、正文、列表和表格样式，并据此生成商业分析报告。</div>
-        <input id="reportTemplateFileInput" type="file" accept=".docx" hidden>
+        <div class="toolbar-tip">支持上传 .docx / .txt / .md 报告模板。Word 模板会校验章节和样式结构；文本模板会校验是否具备正常商业报告提示词要素。</div>
+        <input id="reportTemplateFileInput" type="file" accept=".docx,.txt,.md,text/plain,text/markdown" hidden>
     </div>
 
     <div class="card">
@@ -887,8 +894,15 @@
                 <select id="logRoundFilter">
                     <option value="all">全部轮次</option>
                 </select>
+                <label style="display:flex;align-items:center;gap:6px;">
+                    <input id="logFailedOnly" type="checkbox">
+                    <span>只看失败调用</span>
+                </label>
             </div>
-            <button id="refreshLogBtn" class="secondary-btn" type="button">刷新日志</button>
+            <div class="log-toolbar-left">
+                <button id="exportLogBtn" class="secondary-btn" type="button">导出日志 JSON</button>
+                <button id="refreshLogBtn" class="secondary-btn" type="button">刷新日志</button>
+            </div>
         </div>
         <div id="executionLogPanel" class="log-panel">
             <span class="placeholder-line">-- 暂无执行日志</span>
@@ -943,6 +957,7 @@
     const timeRangeEndEl = document.getElementById('timeRangeEnd');
     const llmProviderSelect = document.getElementById('llmProvider');
     const reportTemplateSelect = document.getElementById('reportTemplateSelect');
+    const templateSampleFormatSelect = document.getElementById('templateSampleFormatSelect');
     const downloadDataBtn = document.getElementById('downloadDataBtn');
     const downloadChartWordBtn = document.getElementById('downloadChartWordBtn');
     const generateReportBtn = document.getElementById('generateReportBtn');
@@ -950,6 +965,8 @@
     const uploadTemplateBtn = document.getElementById('uploadTemplateBtn');
     const reportTemplateFileInput = document.getElementById('reportTemplateFileInput');
     const logRoundFilterEl = document.getElementById('logRoundFilter');
+    const logFailedOnlyEl = document.getElementById('logFailedOnly');
+    const exportLogBtn = document.getElementById('exportLogBtn');
     const refreshLogBtn = document.getElementById('refreshLogBtn');
     const executionLogPanelEl = document.getElementById('executionLogPanel');
     const taskIndicator = document.getElementById('taskIndicator');
@@ -1277,9 +1294,13 @@
 
     function renderFilteredExecutionLogs() {
         const filterValue = logRoundFilterEl.value || 'all';
-        const logs = filterValue === 'all'
+        const failedOnly = !!logFailedOnlyEl.checked;
+        let logs = filterValue === 'all'
             ? currentExecutionLogs
             : currentExecutionLogs.filter(item => Number(item.round_no || 0) === Number(filterValue));
+        if (failedOnly) {
+            logs = logs.filter(item => !!item.error_message);
+        }
         renderExecutionLogs(logs);
     }
 
@@ -1994,6 +2015,7 @@
         }
         syncReportTemplateOptions(data.templates || [], data.template?.template_id);
         updateExportButtons();
+        return data.message || '上传成功';
     }
 
     async function exportFile(url, payload, fallbackName, acceptConfig, successMessage) {
@@ -2080,18 +2102,49 @@
 
     async function downloadTemplateSample() {
         const templateId = getSelectedTemplateId();
-        const response = await fetch(`/api/report/templates/${encodeURIComponent(templateId || '')}/sample`);
+        const sampleFormat = templateSampleFormatSelect.value || 'docx';
+        const response = await fetch(`/api/report/templates/${encodeURIComponent(templateId || '')}/sample?format=${encodeURIComponent(sampleFormat)}`);
         const blob = await readBlobResponse(response);
-        const fileName = parseFileNameFromHeaders(response, 'report_template_sample.docx');
+        const fileName = parseFileNameFromHeaders(response, sampleFormat === 'txt' ? 'report_template_sample.txt' : 'report_template_sample.docx');
         await saveBlobWithPicker(
             blob,
             fileName,
             {
-                description: 'Word 模板样例',
-                accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+                description: sampleFormat === 'txt' ? 'TXT 模板样例' : 'Word 模板样例',
+                accept: sampleFormat === 'txt'
+                    ? { 'text/plain': ['.txt'] }
+                    : { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
             }
         );
         setStatus('报告模板样例已下载', 'ok');
+    }
+
+    async function exportExecutionLogs() {
+        const filterValue = logRoundFilterEl.value || 'all';
+        const failedOnly = !!logFailedOnlyEl.checked;
+        const logs = filterValue === 'all'
+            ? currentExecutionLogs.slice()
+            : currentExecutionLogs.filter(item => Number(item.round_no || 0) === Number(filterValue));
+        const filteredLogs = failedOnly ? logs.filter(item => !!item.error_message) : logs;
+        const payload = {
+            conversation_id: conversationId,
+            exported_at: new Date().toISOString(),
+            filter: {
+                round: filterValue,
+                failed_only: failedOnly,
+            },
+            logs: filteredLogs,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+        await saveBlobWithPicker(
+            blob,
+            `chatbi_logs_${conversationId || 'conversation'}.json`,
+            {
+                description: 'JSON 日志',
+                accept: { 'application/json': ['.json'] },
+            }
+        );
+        setStatus('执行日志已导出', 'ok');
     }
 
     async function downloadTaskFile(taskId, fallbackName) {
@@ -2209,7 +2262,7 @@
         }
         setStatus('正在上传并解析报告模板...');
         uploadReportTemplate(file)
-            .then(() => setStatus('报告模板上传成功，已自动解析样式', 'ok'))
+            .then(message => setStatus(message || '报告模板上传成功，已自动解析样式', 'ok'))
             .catch(error => setStatus(`模板上传失败：${error.message}`, 'error'))
             .finally(() => {
                 reportTemplateFileInput.value = '';
@@ -2223,6 +2276,12 @@
     });
     questionInput.addEventListener('input', updateSubmitButtonText);
     logRoundFilterEl.addEventListener('change', renderFilteredExecutionLogs);
+    logFailedOnlyEl.addEventListener('change', renderFilteredExecutionLogs);
+    exportLogBtn.addEventListener('click', () => {
+        exportExecutionLogs().catch(error => {
+            setStatus(`执行日志导出失败：${error.message}`, 'error');
+        });
+    });
     refreshLogBtn.addEventListener('click', () => {
         loadExecutionLogs().catch(error => {
             setStatus(`日志刷新失败：${error.message}`, 'error');

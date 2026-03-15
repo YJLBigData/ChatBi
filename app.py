@@ -21,6 +21,7 @@ from chatbi.service.task_service import get_task_view, list_task_views, submit_t
 from reporting import (
     DEFAULT_TEMPLATE_ID,
     delete_report_template,
+    export_template_sample_bytes,
     get_report_history_detail,
     get_report_history_file,
     get_report_template,
@@ -274,30 +275,29 @@ def report_templates_api():
 def report_template_upload_api():
     file_storage = request.files.get('file')
     if not file_storage:
-        return jsonify({'error': '请先选择要上传的 .docx 报告模板'}), 400
+        return jsonify({'error': '请先选择要上传的 .docx / .txt / .md 报告模板'}), 400
     try:
         ensure_runtime_ready()
         with get_db_conn() as conn:
             template_info = save_uploaded_template(conn, file_storage)
             conn.commit()
             templates = list_report_templates(conn)
-        return jsonify({'ok': True, 'template': template_info, 'templates': templates})
+        return jsonify({'ok': True, 'message': '上传成功', 'template': template_info, 'templates': templates})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         return jsonify({'error': str(exc)}), 500
 
 
 @app.get('/api/report/templates/<template_id>/sample')
 def report_template_sample_api(template_id: str):
+    sample_format = str(request.args.get('format', 'docx')).strip().lower()
     try:
         ensure_runtime_ready()
         with get_db_conn() as conn:
             template_row = get_report_template(conn, template_id)
-        return send_file(
-            template_row['file_path'],
-            as_attachment=True,
-            download_name=template_row['file_name'],
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        )
+        sample_bytes, download_name, mimetype = export_template_sample_bytes(template_row, sample_format)
+        return send_file(BytesIO(sample_bytes), as_attachment=True, download_name=download_name, mimetype=mimetype)
     except Exception as exc:  # noqa: BLE001
         return jsonify({'error': str(exc)}), 500
 

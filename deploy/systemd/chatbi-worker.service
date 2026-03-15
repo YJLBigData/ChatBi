@@ -1,0 +1,15 @@
+[Unit]
+Description=ChatBI Worker Service
+After=network.target mysql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/Users/yangjinlong/app/PythonProject/ChatBiTest
+ExecStart=/Users/yangjinlong/app/PythonProject/ChatBiTest/.venv/bin/python /Users/yangjinlong/app/PythonProject/ChatBiTest/worker.py
+Restart=always
+RestartSec=5
+User=yangjinlong
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

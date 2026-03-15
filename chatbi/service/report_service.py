@@ -12,6 +12,7 @@ from chatbi.service.context_service import build_context_bundle
 from chatbi.service.conversation_service import get_latest_result_or_raise
 from chatbi.service.llm_service import chat_completion, get_llm_provider_meta
 from reporting import (
+    build_template_markdown_text,
     build_chart_word_bytes,
     build_csv_bytes,
     build_management_report_docx,
@@ -62,6 +63,13 @@ def build_rows_preview(rows: list[dict[str, Any]], columns: list[str], max_rows:
     for row in rows[:max_rows]:
         preview_rows.append({column: row.get(column) for column in columns})
     return json.dumps(preview_rows, ensure_ascii=False)
+
+
+def clamp_template_prompt_text(text: str, max_chars: int = 4000) -> str:
+    normalized = str(text or '').strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return f'{normalized[:max_chars].rstrip()}\n\n[模板提示词内容过长，已截断展示]'
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -127,6 +135,7 @@ def generate_report_content_by_llm(
     conversation_id: str,
     latest_result: dict[str, Any],
     llm_provider: str,
+    template_row: dict[str, Any],
     *,
     client_id: str | None = None,
 ) -> dict[str, Any]:
@@ -146,7 +155,12 @@ def generate_report_content_by_llm(
     columns = latest_result.get('columns', []) or []
     preview_text = build_rows_preview(rows, columns)
     context_text = session_row.get('context_summary') or context_bundle['history_text']
-    system_prompt, user_prompt = build_report_prompts(latest_result, context_text, preview_text)
+    system_prompt, user_prompt = build_report_prompts(
+        latest_result,
+        context_text,
+        preview_text,
+        clamp_template_prompt_text(build_template_markdown_text(template_row)),
+    )
     response = chat_completion(
         stage='report_generate',
         messages=[
@@ -189,13 +203,20 @@ def execute_report_generation_task(task_payload: dict[str, Any], progress: Calla
 
     latest_result = get_latest_result_or_raise(conversation_id)
     provider_to_use = llm_provider or latest_result.get('llm_provider')
+    with get_db_conn() as conn:
+        template_row = get_report_template(conn, template_id)
     if progress:
         progress(20, {'step': '生成报告内容'})
-    report_payload = generate_report_content_by_llm(conversation_id, latest_result, provider_to_use, client_id=client_id)
+    report_payload = generate_report_content_by_llm(
+        conversation_id,
+        latest_result,
+        provider_to_use,
+        template_row,
+        client_id=client_id,
+    )
     if progress:
         progress(60, {'step': '组装Word文档'})
     with get_db_conn() as conn:
-        template_row = get_report_template(conn, template_id)
         document_bytes = build_management_report_docx(template_row, latest_result, report_payload, chart_images)
         llm_meta = get_llm_provider_meta(provider_to_use)
         download_name = build_report_download_name(latest_result)
