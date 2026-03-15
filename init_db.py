@@ -96,7 +96,7 @@ def db_config(include_database: bool = True) -> dict:
         "autocommit": False,
     }
     if include_database:
-        config["database"] = os.getenv("MYSQL_DATABASE", "test")
+        config["database"] = os.getenv("MYSQL_DATABASE", "chatbi")
     return config
 
 
@@ -116,7 +116,7 @@ def random_name() -> str:
 
 
 def create_database() -> None:
-    database = os.getenv("MYSQL_DATABASE", "test")
+    database = os.getenv("MYSQL_DATABASE", "chatbi")
     with pymysql.connect(**db_config(include_database=False)) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -840,7 +840,7 @@ def main() -> None:
         products=dimension_result.pop("product_objects"),
     )
     ensure_semantic_runtime(refresh_embeddings=False)
-    database = os.getenv("MYSQL_DATABASE", "test")
+    database = os.getenv("MYSQL_DATABASE", "chatbi")
     print(
         "Done. Seeded "
         f"{database}.user_info={dimension_result['users']}, "

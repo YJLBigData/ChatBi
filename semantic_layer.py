@@ -20,7 +20,7 @@ DB_CONFIG = {
     "port": int(os.getenv("MYSQL_PORT", "3306")),
     "user": os.getenv("MYSQL_USER", "root"),
     "password": os.getenv("MYSQL_PASSWORD", "toor"),
-    "database": os.getenv("MYSQL_DATABASE", "test"),
+    "database": os.getenv("MYSQL_DATABASE", "chatbi"),
     "charset": "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
     "autocommit": False,

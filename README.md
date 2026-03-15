@@ -42,6 +42,7 @@ cp .env.example .env
 
 至少确认以下配置：
 - `MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_PASSWORD/MYSQL_DATABASE`
+- 默认数据库建议使用 `chatbi`，系统会在启动或初始化时自动创建该数据库。
 - `DASHSCOPE_API_KEY`
 - `DASHSCOPE_MODEL`
 - `DEEPSEEK_API_KEY`
