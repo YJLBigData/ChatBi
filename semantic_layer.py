@@ -11,6 +11,8 @@ import pymysql
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from chatbi.utils.question_utils import is_context_dependent_question
+
 
 load_dotenv()
 
@@ -1562,7 +1564,12 @@ def _expand_tables(base_tables: set[str], join_rows: list[dict[str, Any]]) -> se
     return expanded
 
 
-def retrieve_semantic_context(question: str, history_messages: list[dict[str, str]], max_tables: int = 5) -> dict[str, Any]:
+def retrieve_semantic_context(
+    question: str,
+    history_messages: list[dict[str, str]],
+    max_tables: int = 5,
+    carryover_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     ensure_semantic_runtime()
     with get_db_conn() as conn:
         entities = _load_semantic_entities(conn)
@@ -1571,11 +1578,13 @@ def retrieve_semantic_context(question: str, history_messages: list[dict[str, st
             refresh_pending_embeddings(conn, limit=10)
             docs = _load_search_docs(conn)
 
-        recent_user_text = " ".join(
-            message.get("content", "")
-            for message in history_messages[-6:]
-            if message.get("role") == "user"
-        )
+        recent_user_text = ""
+        if is_context_dependent_question(question):
+            recent_user_text = " ".join(
+                message.get("content", "")
+                for message in history_messages[-6:]
+                if message.get("role") == "user"
+            )
         merged_question = f"{recent_user_text} {question}".strip()
         normalized_question = _normalize_for_match(merged_question)
 
@@ -1634,43 +1643,108 @@ def retrieve_semantic_context(question: str, history_messages: list[dict[str, st
         selected_metric_names: list[str] = []
         selected_dimension_names: list[str] = []
 
-        top_table_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "table"][:max_tables]
         top_metric_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "metric"][:4]
         top_dimension_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "dimension"][:4]
-        top_example_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "example"][:2]
+        include_table_docs = not top_metric_docs and not top_dimension_docs
+        top_table_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "table"][:max_tables] if include_table_docs else []
+        top_example_docs = [doc for doc, score in scored_docs if doc["source_type"] == "example" and score >= score_floor + 2][:2]
 
-        selected_example_rows: list[dict[str, Any]] = [doc["payload"] for doc in top_example_docs]
-
-        for doc in top_table_docs + top_metric_docs + top_dimension_docs + top_example_docs:
-            selected_table_names.update(doc.get("related_tables", []))
-            for metric_name in doc.get("related_metrics", []):
-                if metric_name and metric_name not in selected_metric_names:
-                    selected_metric_names.append(metric_name)
-            for dimension_name in doc.get("related_dimensions", []):
-                if dimension_name and dimension_name not in selected_dimension_names:
-                    selected_dimension_names.append(dimension_name)
+        selected_example_rows: list[dict[str, Any]] = []
 
         top_metric_codes = [doc["source_key"] for doc in top_metric_docs]
         top_dimension_codes = [doc["source_key"] for doc in top_dimension_docs]
         selected_metric_rows = [metric_lookup[code] for code in top_metric_codes if code in metric_lookup][:4]
         selected_dimension_rows = [dimension_lookup[code] for code in top_dimension_codes if code in dimension_lookup][:4]
 
-        for metric_row in selected_metric_rows:
+        def prune_related_tables(table_names: list[str], context_key: str = '') -> list[str]:
+            tables = list(table_names or [])
+            if context_key in {'brand_name', 'product_name', 'category_l1', 'category_l2', 'brand_example'} and 'order_detail' in tables:
+                tables = [table_name for table_name in tables if table_name != 'product_info']
+            return tables
+
+        def append_metric_row(metric_row: dict[str, Any]) -> None:
             if metric_row["metric_name"] not in selected_metric_names:
                 selected_metric_names.append(metric_row["metric_name"])
+            if not any(existing["metric_code"] == metric_row["metric_code"] for existing in selected_metric_rows):
+                selected_metric_rows.append(metric_row)
             selected_table_names.update(metric_row.get("related_tables", []))
 
-        for dimension_row in selected_dimension_rows:
+        def append_dimension_row(dimension_row: dict[str, Any]) -> None:
             if dimension_row["dimension_name"] not in selected_dimension_names:
                 selected_dimension_names.append(dimension_row["dimension_name"])
-            selected_table_names.update(dimension_row.get("related_tables", []))
+            if not any(existing["dimension_code"] == dimension_row["dimension_code"] for existing in selected_dimension_rows):
+                selected_dimension_rows.append(dimension_row)
+            selected_table_names.update(prune_related_tables(dimension_row.get("related_tables", []), dimension_row["dimension_code"]))
+
+        for doc in top_table_docs:
+            selected_table_names.update(doc.get("related_tables", []))
+
+        explicit_metric_rows = [
+            metric
+            for metric in entities["metrics"]
+            if any(_normalize_for_match(keyword) in normalized_question for keyword in metric.get("keywords", []))
+        ]
+        explicit_dimension_rows = [
+            dimension
+            for dimension in entities["dimensions"]
+            if any(_normalize_for_match(keyword) in normalized_question for keyword in dimension.get("keywords", []))
+        ]
+
+        for metric_row in explicit_metric_rows[:2]:
+            append_metric_row(metric_row)
+        for dimension_row in explicit_dimension_rows[:3]:
+            append_dimension_row(dimension_row)
+
+        if carryover_context:
+            carryover_metric_names = [str(item).strip() for item in carryover_context.get("metrics", []) if str(item).strip()]
+            carryover_dimension_names = [str(item).strip() for item in carryover_context.get("dimensions", []) if str(item).strip()]
+            for metric_row in entities["metrics"]:
+                if metric_row["metric_name"] in carryover_metric_names:
+                    append_metric_row(metric_row)
+            for dimension_row in entities["dimensions"]:
+                if dimension_row["dimension_name"] in carryover_dimension_names:
+                    append_dimension_row(dimension_row)
+            if any(token in normalized_question for token in ["河南", "江苏", "浙江", "广东", "北京", "上海", "四川", "福建", "山东", "湖北", "陕西", "重庆"]):
+                receiver_province_row = next(
+                    (row for row in entities["dimensions"] if row["dimension_code"] == "receiver_province"),
+                    None,
+                )
+                if receiver_province_row:
+                    append_dimension_row(receiver_province_row)
+
+        selected_metric_name_set = {row["metric_name"] for row in selected_metric_rows}
+        selected_dimension_name_set = {row["dimension_name"] for row in selected_dimension_rows}
+
+        for doc in top_example_docs:
+            payload = doc["payload"]
+            example_metrics = set(payload.get("related_metrics", []))
+            example_dimensions = set(payload.get("related_dimensions", []))
+            if selected_metric_name_set or selected_dimension_name_set:
+                metric_overlap = example_metrics.intersection(selected_metric_name_set)
+                dimension_overlap = example_dimensions.intersection(selected_dimension_name_set)
+                if selected_dimension_name_set and example_dimensions and not dimension_overlap:
+                    continue
+                if not (metric_overlap or dimension_overlap):
+                    continue
+            selected_example_rows.append(payload)
+            example_context_key = 'brand_example' if '品牌' in example_dimensions else ''
+            selected_table_names.update(prune_related_tables(payload.get("related_tables", []), example_context_key))
+
+        for metric_row in list(selected_metric_rows):
+            append_metric_row(metric_row)
+
+        for dimension_row in list(selected_dimension_rows):
+            append_dimension_row(dimension_row)
+
+        selected_metric_rows = selected_metric_rows[:4]
+        selected_dimension_rows = selected_dimension_rows[:4]
 
         selected_table_names = _expand_tables(selected_table_names, join_rows)
         ordered_table_names = sorted(
             selected_table_names,
             key=lambda item: table_lookup.get(item, {}).get("priority_score", 0),
             reverse=True,
-        )[: max_tables + 2]
+        )[:max_tables]
         selected_table_rows = [table_lookup[name] for name in ordered_table_names if name in table_lookup]
 
         selected_join_rows = [

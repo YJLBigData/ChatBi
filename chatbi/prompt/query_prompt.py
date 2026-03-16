@@ -37,7 +37,8 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '24) 如果问题中的时间语义是按月或某月到某月，则 time_granularity 返回 month，并尽量给出 YYYY-MM 格式的 time_range_start / time_range_end；'
         '25) 如果问题中的时间语义是按周或某周到某周，则 time_granularity 返回 week，并尽量给出 YYYY-Www 格式的 time_range_start / time_range_end；'
         '26) 如果没有时间概念，则 time_granularity 返回 none，time_dimension / time_range_start / time_range_end 置空；'
-        '27) 如果用户是在上一轮基础上只调整时间范围，必须保留原来的指标、维度和其他筛选条件。'
+        '27) 如果用户是在上一轮基础上只调整时间范围，必须保留原来的指标、维度和其他筛选条件；'
+        '28) 如果当前问题本身已经完整独立，必须以当前问题为准，不要继承上一轮的品牌、地区、会员等级、门店、渠道等筛选条件。'
     )
     user_prompt = f"{semantic_prompt_text}\n\n历史对话:\n{history_text}\n\n当前用户问题: {question}"
     return system_prompt, user_prompt

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from chatbi.repository.chat_repository import (
     append_conversation_message,
     ensure_chat_session,
     get_conversation_history_records,
+    get_chat_session_row,
     infer_next_round_no_from_history,
     update_chat_session_context,
 )
@@ -18,9 +20,27 @@ from chatbi.repository.db import get_db_conn
 from chatbi.service.context_service import build_context_bundle, estimate_text_tokens, normalize_context_stats
 from chatbi.service.conversation_service import normalize_name_list, normalize_time_granularity, save_latest_result
 from chatbi.service.llm_service import chat_completion, get_llm_provider_meta, normalize_llm_provider, DEFAULT_PROVIDER
+from chatbi.utils.question_utils import compact_whitespace, is_context_dependent_question
 from semantic_layer import retrieve_semantic_context
 
 logger = logging.getLogger(__name__)
+
+LOCATION_LITERAL_SOURCES: dict[str, list[tuple[str, str]]] = {
+    'receiver_province': [('order_master', 'receiver_province')],
+    'province': [('user_info', 'province'), ('store_info', 'province')],
+    'receiver_city': [('order_master', 'receiver_city')],
+    'city': [('user_info', 'city'), ('store_info', 'city')],
+}
+
+LOCATION_SUFFIXES = [
+    '维吾尔自治区',
+    '壮族自治区',
+    '回族自治区',
+    '特别行政区',
+    '自治区',
+    '省',
+    '市',
+]
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -40,6 +60,88 @@ def extract_json_payload(text: str) -> dict[str, Any]:
 
 def extract_cte_names(sql: str) -> set[str]:
     return set(re.findall(r'(?:(?:with)|,)\s*([a-zA-Z_][\w]*)\s+as\s*\(', sql, re.IGNORECASE))
+
+
+def normalize_location_literal(value: str) -> str:
+    normalized = compact_whitespace(value)
+    for suffix in LOCATION_SUFFIXES:
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized.strip()
+
+
+@lru_cache(maxsize=32)
+def get_distinct_dimension_values(table_name: str, column_name: str) -> tuple[str, ...]:
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT DISTINCT `{column_name}` AS value FROM `{table_name}` WHERE `{column_name}` IS NOT NULL AND `{column_name}` <> ''"
+            )
+            rows = cursor.fetchall()
+    values = []
+    for row in rows:
+        value = str(row.get('value') or '').strip()
+        if value and value not in values:
+            values.append(value)
+    return tuple(values)
+
+
+def resolve_dimension_literal(column_name: str, value: str) -> str:
+    sources = LOCATION_LITERAL_SOURCES.get(column_name.lower())
+    if not sources:
+        return value
+    raw_value = str(value or '').strip()
+    if not raw_value:
+        return raw_value
+    exact_candidates: list[str] = []
+    normalized_target = normalize_location_literal(raw_value)
+    normalized_candidates: list[str] = []
+    for table_name, source_column in sources:
+        for actual_value in get_distinct_dimension_values(table_name, source_column):
+            if actual_value == raw_value and actual_value not in exact_candidates:
+                exact_candidates.append(actual_value)
+            if normalize_location_literal(actual_value) == normalized_target and actual_value not in normalized_candidates:
+                normalized_candidates.append(actual_value)
+    if exact_candidates:
+        return exact_candidates[0]
+    if len(normalized_candidates) == 1:
+        return normalized_candidates[0]
+    return raw_value
+
+
+def normalize_sql_filter_values(sql: str) -> str:
+    if not sql:
+        return sql
+    columns_pattern = '|'.join(re.escape(column_name) for column_name in LOCATION_LITERAL_SOURCES)
+    in_pattern = re.compile(
+        rf'(?P<lhs>(?:\b\w+\.)?(?P<column>{columns_pattern}))\s+IN\s*\((?P<values>[^)]*)\)',
+        re.IGNORECASE,
+    )
+    eq_pattern = re.compile(
+        rf'(?P<lhs>(?:\b\w+\.)?(?P<column>{columns_pattern}))\s*=\s*\'(?P<value>[^\']*)\'',
+        re.IGNORECASE,
+    )
+
+    def replace_in(match: re.Match[str]) -> str:
+        column_name = match.group('column')
+        raw_values = re.findall(r"'([^']*)'", match.group('values'))
+        if not raw_values:
+            return match.group(0)
+        normalized_values = [resolve_dimension_literal(column_name, item) for item in raw_values]
+        formatted = ', '.join(f"'{item}'" for item in normalized_values)
+        return f"{match.group('lhs')} IN ({formatted})"
+
+    def replace_eq(match: re.Match[str]) -> str:
+        column_name = match.group('column')
+        normalized_value = resolve_dimension_literal(column_name, match.group('value'))
+        return f"{match.group('lhs')} = '{normalized_value}'"
+
+    normalized_sql = in_pattern.sub(replace_in, sql)
+    normalized_sql = eq_pattern.sub(replace_eq, normalized_sql)
+    if normalized_sql != sql:
+        logger.info('sql filter literals normalized original=%s normalized=%s', sql[:800], normalized_sql[:800])
+    return normalized_sql
 
 
 def validate_and_normalize_sql(sql: str) -> str:
@@ -97,9 +199,21 @@ def generate_query_plan_by_llm(
 ) -> dict[str, Any]:
     llm_provider = normalize_llm_provider(llm_provider) or DEFAULT_PROVIDER
     llm_meta = get_llm_provider_meta(llm_provider)
+    prior_result: dict[str, Any] | None = None
+    if is_context_dependent_question(question):
+        session_row = get_chat_session_row(conversation_id) or {}
+        try:
+            latest_result_json = session_row.get('latest_result_json')
+            if latest_result_json:
+                payload = json.loads(str(latest_result_json))
+                if isinstance(payload, dict):
+                    prior_result = payload
+        except Exception:  # noqa: BLE001
+            prior_result = None
     semantic_context = retrieve_semantic_context(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
+        carryover_context=prior_result,
     )
     logger.info(
         'query plan start conversation_id=%s request_id=%s round_no=%s candidate_tables=%s candidate_metrics=%s',
@@ -230,6 +344,7 @@ def repair_sql_by_llm(
     semantic_context = retrieve_semantic_context(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
+        carryover_context=None,
     )
     history_text = build_context_bundle(
         conversation_id,
@@ -308,7 +423,7 @@ def handle_user_query(
             'model': llm_result['model'],
             'context_stats': llm_result['context_stats'],
         }
-    sql = validate_and_normalize_sql(llm_result['sql'])
+    sql = normalize_sql_filter_values(validate_and_normalize_sql(llm_result['sql']))
     try:
         columns, rows = run_query(sql)
     except Exception as query_exc:  # noqa: BLE001
@@ -331,7 +446,7 @@ def handle_user_query(
             request_id=request_id,
             round_no=round_no,
         )
-        sql = validate_and_normalize_sql(repaired_sql)
+        sql = normalize_sql_filter_values(validate_and_normalize_sql(repaired_sql))
         columns, rows = run_query(sql)
     assistant_display = (
         f"{llm_result['assistant_message']}\n"
@@ -344,8 +459,8 @@ def handle_user_query(
         f"指标描述: {llm_result['metric_description']}。"
         f"维度: {', '.join(llm_result['dimensions']) or '无'}。"
         f"指标: {', '.join(llm_result['metrics'])}。"
-        f"候选表: {', '.join(llm_result['candidate_tables'])}。"
-        f"SQL: {sql}"
+        f"时间粒度: {llm_result['time_granularity']}。"
+        f"时间范围: {llm_result['time_range_start'] or '空'} 至 {llm_result['time_range_end'] or '空'}。"
     )
     append_conversation_message(conversation_id, 'user', question)
     append_conversation_message(conversation_id, 'assistant', assistant_context, assistant_display)

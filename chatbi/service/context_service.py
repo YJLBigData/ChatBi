@@ -14,6 +14,7 @@ from chatbi.config import (
 from chatbi.prompt.query_prompt import build_summary_prompts
 from chatbi.repository.chat_repository import get_chat_session_row, update_chat_session_context
 from chatbi.service.llm_service import get_llm_provider_meta, normalize_llm_provider, chat_completion, DEFAULT_PROVIDER
+from chatbi.utils.question_utils import sanitize_history_content
 
 
 def safe_load_json_dict(raw_value: Any) -> dict[str, Any]:
@@ -69,7 +70,8 @@ def format_history_lines(history: list[dict[str, str]], max_messages: int | None
     messages = history[-max_messages:] if max_messages else history
     for message in messages:
         role_name = '用户' if message['role'] == 'user' else '助手'
-        formatted.append(f"{role_name}: {message['content']}")
+        sanitized = sanitize_history_content(message['role'], message['content'])
+        formatted.append(f"{role_name}: {sanitized}")
     return '\n'.join(formatted)
 
 
@@ -78,7 +80,7 @@ def build_fallback_summary(existing_summary: str, records: list[dict[str, Any]])
     new_lines: list[str] = []
     for record in records[-MAX_CONTEXT_SUMMARY_LINES:]:
         role_name = '用户' if record.get('role') == 'user' else '助手'
-        snippet = compact_text(record.get('content', ''), 120)
+        snippet = compact_text(sanitize_history_content(record.get('role', ''), record.get('content', '')), 120)
         if snippet:
             new_lines.append(f'- {role_name}: {snippet}')
     merged_lines: list[str] = []
