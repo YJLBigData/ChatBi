@@ -214,6 +214,7 @@ def generate_query_plan_by_llm(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
         carryover_context=prior_result,
+        prompt_mode='query',
     )
     logger.info(
         'query plan start conversation_id=%s request_id=%s round_no=%s candidate_tables=%s candidate_metrics=%s',
@@ -345,6 +346,8 @@ def repair_sql_by_llm(
         question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
         carryover_context=None,
+        prompt_mode='repair',
+        extra_sql_text=failed_sql,
     )
     history_text = build_context_bundle(
         conversation_id,
@@ -354,7 +357,13 @@ def repair_sql_by_llm(
         request_id=request_id,
         round_no=round_no,
     )['history_text']
-    system_prompt, user_prompt = build_sql_repair_prompts(semantic_context['prompt_text'], history_text, question, failed_sql, error_message)
+    system_prompt, user_prompt = build_sql_repair_prompts(
+        semantic_context.get('repair_prompt_text') or semantic_context['prompt_text'],
+        history_text,
+        question,
+        failed_sql,
+        error_message,
+    )
     response = chat_completion(
         stage='sql_repair',
         messages=[

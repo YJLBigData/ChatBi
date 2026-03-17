@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections import defaultdict, deque
 from typing import Any
 
@@ -36,6 +37,18 @@ DASHSCOPE_EMBEDDING_MODEL = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embeddi
 SEMANTIC_VECTOR_TOPK = int(os.getenv("SEMANTIC_VECTOR_TOPK", "12"))
 SEMANTIC_FULLTEXT_TOPK = int(os.getenv("SEMANTIC_FULLTEXT_TOPK", "12"))
 SEMANTIC_RUNTIME_READY = False
+COLUMN_REF_PATTERN = re.compile(r"([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)")
+
+
+PROMPT_FIELD_HINTS: dict[str, list[str]] = {
+    "order_master": ["order_id", "created_at", "order_status", "paid_amount", "sales_channel", "receiver_province", "buyer_id", "store_id"],
+    "order_detail": ["order_detail_id", "order_id", "brand_name", "product_id", "line_paid_amount", "line_gross_amount", "quantity", "sales_channel"],
+    "refund_master": ["refund_id", "order_id", "buyer_id", "store_id", "refund_amount", "refund_status", "refund_reason", "applied_at"],
+    "refund_detail": ["refund_detail_id", "refund_id", "order_detail_id", "product_id", "refund_amount", "refund_reason", "refund_quantity"],
+    "user_info": ["user_id", "member_level", "gender", "age", "province", "city"],
+    "store_info": ["store_id", "store_name", "sales_region", "channel_name", "channel_type", "province", "city"],
+    "product_info": ["product_id", "brand_name", "product_name", "category_l1", "category_l2", "channel_type"],
+}
 
 
 DDL_STATEMENTS = [
@@ -387,6 +400,19 @@ DEFAULT_METRICS = [
         "related_tables": ["refund_master", "refund_detail"],
         "keywords": ["退款金额", "退款额", "售后金额"],
         "priority_score": 94,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "refund_rate",
+        "metric_name": "退款率",
+        "domain_key": "refund",
+        "definition_name": "退款率",
+        "description": "默认取退款金额 / 销售金额；订单级使用 refund_master.refund_amount 与 order_master.paid_amount，商品级需结合退款明细与订单明细口径。",
+        "default_expression": "SUM(refund_master.refund_amount) / NULLIF(SUM(order_master.paid_amount) 或 SUM(order_detail.line_paid_amount), 0)",
+        "default_filters": "退款率需要与销售金额保持同一时间范围、同一筛选条件和同一分析粒度。",
+        "related_tables": ["order_master", "order_detail", "refund_master", "refund_detail"],
+        "keywords": ["退款率", "退货率", "售后率"],
+        "priority_score": 90,
         "is_active": 1,
     },
     {
@@ -1564,11 +1590,238 @@ def _expand_tables(base_tables: set[str], join_rows: list[dict[str, Any]]) -> se
     return expanded
 
 
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = _safe_text(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _extract_column_refs(text: str) -> dict[str, list[str]]:
+    refs: dict[str, list[str]] = defaultdict(list)
+    for table_name, column_name in COLUMN_REF_PATTERN.findall(str(text or "")):
+        if column_name not in refs[table_name]:
+            refs[table_name].append(column_name)
+    return dict(refs)
+
+
+def _merge_column_refs(target: dict[str, list[str]], source: dict[str, list[str]]) -> None:
+    for table_name, columns in source.items():
+        bucket = target.setdefault(table_name, [])
+        for column_name in columns:
+            if column_name not in bucket:
+                bucket.append(column_name)
+
+
+def _append_columns(target: dict[str, list[str]], table_name: str, columns: list[str]) -> None:
+    bucket = target.setdefault(table_name, [])
+    for column_name in columns:
+        if column_name not in bucket:
+            bucket.append(column_name)
+
+
+def _is_explicit_group_dimension(question_text: str, dimension_row: dict[str, Any]) -> bool:
+    normalized_question = _normalize_for_match(question_text)
+    terms = [dimension_row.get("dimension_name", ""), *dimension_row.get("keywords", [])]
+    for term in terms:
+        normalized_term = _normalize_for_match(term)
+        if not normalized_term:
+            continue
+        if any(
+            marker in normalized_question
+            for marker in (
+                f"按{normalized_term}",
+                f"各{normalized_term}",
+                f"{normalized_term}分组",
+                f"{normalized_term}拆分",
+                f"{normalized_term}展开",
+                f"按{normalized_term}排序",
+                f"按{normalized_term}降序",
+            )
+        ):
+            return True
+    return False
+
+
+def _build_relevant_column_refs(
+    selected_metric_rows: list[dict[str, Any]],
+    selected_dimension_rows: list[dict[str, Any]],
+    selected_join_rows: list[dict[str, Any]],
+    selected_example_rows: list[dict[str, Any]],
+    extra_sql_text: str = "",
+) -> dict[str, list[str]]:
+    refs: dict[str, list[str]] = {}
+    for metric_row in selected_metric_rows:
+        _merge_column_refs(refs, _extract_column_refs(metric_row.get("default_expression", "")))
+    for dimension_row in selected_dimension_rows:
+        _merge_column_refs(refs, _extract_column_refs(dimension_row.get("source_expression", "")))
+    for join_row in selected_join_rows:
+        _merge_column_refs(refs, _extract_column_refs(join_row.get("join_condition", "")))
+    for example_row in selected_example_rows:
+        _merge_column_refs(refs, _extract_column_refs(example_row.get("sql_example", "")))
+    if extra_sql_text:
+        _merge_column_refs(refs, _extract_column_refs(extra_sql_text))
+
+    metric_codes = {row.get("metric_code", "") for row in selected_metric_rows}
+    dimension_codes = {row.get("dimension_code", "") for row in selected_dimension_rows}
+
+    if metric_codes.intersection({"sales_amount", "order_count", "avg_order_value", "refund_rate"}):
+        _append_columns(refs, "order_master", ["order_id", "created_at", "order_status"])
+    if metric_codes.intersection({"sales_amount", "avg_order_value"}):
+        _append_columns(refs, "order_master", ["paid_amount", "sales_channel"])
+        _append_columns(refs, "order_detail", ["order_id", "line_paid_amount", "line_gross_amount"])
+    if metric_codes.intersection({"sales_volume", "gross_merchandise_amount"}):
+        _append_columns(refs, "order_detail", ["order_id", "quantity", "line_paid_amount", "line_gross_amount"])
+    if metric_codes.intersection({"refund_amount", "refund_count", "refund_rate"}):
+        _append_columns(refs, "refund_master", ["refund_id", "order_id", "refund_amount", "refund_status", "applied_at"])
+    if "refund_amount" in metric_codes and "refund_detail" in PROMPT_FIELD_HINTS:
+        _append_columns(refs, "refund_detail", ["refund_id", "order_detail_id", "refund_amount"])
+    if "user_count" in metric_codes:
+        _append_columns(refs, "user_info", ["user_id"])
+
+    dimension_hint_map = {
+        "sales_channel": ("order_master", ["sales_channel"]),
+        "receiver_province": ("order_master", ["receiver_province"]),
+        "brand_name": ("order_detail", ["brand_name"]),
+        "member_level": ("user_info", ["member_level"]),
+        "sales_region": ("store_info", ["sales_region"]),
+        "store_name": ("store_info", ["store_name"]),
+        "category_l1": ("order_detail", ["category_l1"]),
+        "category_l2": ("order_detail", ["category_l2"]),
+        "refund_reason": ("refund_master", ["refund_reason"]),
+    }
+    for dimension_code in dimension_codes:
+        table_and_fields = dimension_hint_map.get(dimension_code)
+        if table_and_fields:
+            _append_columns(refs, table_and_fields[0], table_and_fields[1])
+
+    return {table_name: _dedupe_keep_order(columns) for table_name, columns in refs.items()}
+
+
+def _build_compact_table_prompt_lines(
+    selected_table_rows: list[dict[str, Any]],
+    column_map: dict[str, list[dict[str, Any]]],
+    relevant_column_refs: dict[str, list[str]],
+    prompt_mode: str,
+) -> list[str]:
+    prompt_lines: list[str] = []
+    field_limit = 8 if prompt_mode == "repair" else 6
+    for table_row in selected_table_rows:
+        table_name = table_row["table_name"]
+        if prompt_mode == "repair":
+            prompt_lines.append(
+                f"- {table_name}（{table_row['business_name']}，{table_row['table_role']}）"
+            )
+        else:
+            prompt_lines.append(
+                f"- {table_name}（{table_row['business_name']}，{table_row['table_role']}）：{table_row.get('description', '')}"
+            )
+        allowed_columns = {column["column_name"] for column in column_map.get(table_name, [])}
+        needed_fields = [
+            column_name
+            for column_name in relevant_column_refs.get(table_name, [])
+            if column_name in allowed_columns
+        ]
+        if not needed_fields:
+            needed_fields = [
+                column_name
+                for column_name in PROMPT_FIELD_HINTS.get(table_name, [])
+                if column_name in allowed_columns
+            ]
+        prompt_lines.append(f"  必要字段：{'、'.join(needed_fields[:field_limit])}")
+    return prompt_lines
+
+
+def _build_semantic_prompt_text(
+    *,
+    question: str,
+    selected_metric_rows: list[dict[str, Any]],
+    selected_dimension_rows: list[dict[str, Any]],
+    selected_table_rows: list[dict[str, Any]],
+    selected_join_rows: list[dict[str, Any]],
+    selected_example_rows: list[dict[str, Any]],
+    column_map: dict[str, list[dict[str, Any]]],
+    prompt_mode: str,
+    extra_sql_text: str = "",
+) -> str:
+    group_dimensions = [
+        row for row in selected_dimension_rows
+        if _is_explicit_group_dimension(question, row)
+    ]
+    filter_dimensions = [
+        row for row in selected_dimension_rows
+        if row["dimension_code"] not in {item["dimension_code"] for item in group_dimensions}
+    ]
+    relevant_column_refs = _build_relevant_column_refs(
+        selected_metric_rows,
+        selected_dimension_rows,
+        selected_join_rows,
+        selected_example_rows if prompt_mode == "query" else [],
+        extra_sql_text=extra_sql_text,
+    )
+
+    prompt_lines: list[str] = ["候选业务语义层：", "候选业务指标:"]
+    for metric_row in selected_metric_rows:
+        if prompt_mode == "repair":
+            prompt_lines.append(
+                f"- {metric_row['metric_name']}：表达式 {metric_row.get('default_expression', '')}；相关表：{'、'.join(metric_row.get('related_tables', []))}"
+            )
+        else:
+            prompt_lines.append(
+                f"- {metric_row['metric_name']}：{metric_row.get('description', '')}；表达式：{metric_row.get('default_expression', '')}"
+            )
+
+    if group_dimensions:
+        prompt_lines.append("候选分组维度:")
+        for dimension_row in group_dimensions:
+            prompt_lines.append(
+                f"- {dimension_row['dimension_name']}：表达式 {dimension_row.get('source_expression', '')}"
+            )
+
+    if filter_dimensions:
+        prompt_lines.append("候选过滤维度:")
+        for dimension_row in filter_dimensions:
+            prompt_lines.append(
+                f"- {dimension_row['dimension_name']}：表达式 {dimension_row.get('source_expression', '')}"
+            )
+
+    prompt_lines.append("候选业务表:")
+    prompt_lines.extend(
+        _build_compact_table_prompt_lines(
+            selected_table_rows,
+            column_map,
+            relevant_column_refs,
+            prompt_mode,
+        )
+    )
+
+    prompt_lines.append("候选关联关系:")
+    for join_row in selected_join_rows:
+        prompt_lines.append(f"- {join_row['join_condition']}")
+
+    if prompt_mode == "query" and selected_example_rows:
+        prompt_lines.append("候选相似问法:")
+        for example in selected_example_rows[:1]:
+            prompt_lines.append(
+                f"- 问法：{example.get('question_text', '')}；说明：{example.get('summary_text', '')}"
+            )
+
+    prompt_lines.append("如果候选信息不足以安全回答当前问题，必须先澄清，不允许臆造字段或关联关系。")
+    return "\n".join(prompt_lines)
+
+
 def retrieve_semantic_context(
     question: str,
     history_messages: list[dict[str, str]],
-    max_tables: int = 5,
+    max_tables: int = 4,
     carryover_context: dict[str, Any] | None = None,
+    prompt_mode: str = "query",
+    extra_sql_text: str = "",
 ) -> dict[str, Any]:
     ensure_semantic_runtime()
     with get_db_conn() as conn:
@@ -1643,18 +1896,18 @@ def retrieve_semantic_context(
         selected_metric_names: list[str] = []
         selected_dimension_names: list[str] = []
 
-        top_metric_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "metric"][:4]
-        top_dimension_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "dimension"][:4]
+        top_metric_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "metric"][:3]
+        top_dimension_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "dimension"][:3]
         include_table_docs = not top_metric_docs and not top_dimension_docs
         top_table_docs = [doc for doc, _score in scored_docs if doc["source_type"] == "table"][:max_tables] if include_table_docs else []
-        top_example_docs = [doc for doc, score in scored_docs if doc["source_type"] == "example" and score >= score_floor + 2][:2]
+        top_example_docs = [doc for doc, score in scored_docs if doc["source_type"] == "example" and score >= score_floor + 3][:1]
 
         selected_example_rows: list[dict[str, Any]] = []
 
         top_metric_codes = [doc["source_key"] for doc in top_metric_docs]
         top_dimension_codes = [doc["source_key"] for doc in top_dimension_docs]
-        selected_metric_rows = [metric_lookup[code] for code in top_metric_codes if code in metric_lookup][:4]
-        selected_dimension_rows = [dimension_lookup[code] for code in top_dimension_codes if code in dimension_lookup][:4]
+        selected_metric_rows = [metric_lookup[code] for code in top_metric_codes if code in metric_lookup][:3]
+        selected_dimension_rows = [dimension_lookup[code] for code in top_dimension_codes if code in dimension_lookup][:3]
 
         def prune_related_tables(table_names: list[str], context_key: str = '') -> list[str]:
             tables = list(table_names or [])
@@ -1690,7 +1943,7 @@ def retrieve_semantic_context(
             if any(_normalize_for_match(keyword) in normalized_question for keyword in dimension.get("keywords", []))
         ]
 
-        for metric_row in explicit_metric_rows[:2]:
+        for metric_row in explicit_metric_rows[:3]:
             append_metric_row(metric_row)
         for dimension_row in explicit_dimension_rows[:3]:
             append_dimension_row(dimension_row)
@@ -1714,6 +1967,11 @@ def retrieve_semantic_context(
 
         selected_metric_name_set = {row["metric_name"] for row in selected_metric_rows}
         selected_dimension_name_set = {row["dimension_name"] for row in selected_dimension_rows}
+        selected_group_dimension_name_set = {
+            row["dimension_name"]
+            for row in selected_dimension_rows
+            if _is_explicit_group_dimension(question, row)
+        }
 
         for doc in top_example_docs:
             payload = doc["payload"]
@@ -1722,7 +1980,7 @@ def retrieve_semantic_context(
             if selected_metric_name_set or selected_dimension_name_set:
                 metric_overlap = example_metrics.intersection(selected_metric_name_set)
                 dimension_overlap = example_dimensions.intersection(selected_dimension_name_set)
-                if selected_dimension_name_set and example_dimensions and not dimension_overlap:
+                if selected_group_dimension_name_set and example_dimensions and not example_dimensions.intersection(selected_group_dimension_name_set):
                     continue
                 if not (metric_overlap or dimension_overlap):
                     continue
@@ -1736,8 +1994,8 @@ def retrieve_semantic_context(
         for dimension_row in list(selected_dimension_rows):
             append_dimension_row(dimension_row)
 
-        selected_metric_rows = selected_metric_rows[:4]
-        selected_dimension_rows = selected_dimension_rows[:4]
+        selected_metric_rows = selected_metric_rows[:3]
+        selected_dimension_rows = selected_dimension_rows[:3]
 
         selected_table_names = _expand_tables(selected_table_names, join_rows)
         ordered_table_names = sorted(
@@ -1754,46 +2012,34 @@ def retrieve_semantic_context(
         ]
 
         column_map = entities["column_map"]
-        prompt_lines: list[str] = ["候选业务语义层："]
-        prompt_lines.append("候选业务指标:")
-        for metric_row in selected_metric_rows or entities["metrics"][:3]:
-            prompt_lines.append(
-                f"- {metric_row['metric_name']}：{metric_row.get('description', '')}；默认表达式：{metric_row.get('default_expression', '')}；相关表：{'、'.join(metric_row.get('related_tables', []))}"
-            )
+        if not selected_metric_rows:
+            selected_metric_rows = entities["metrics"][:3]
+        if not selected_dimension_rows:
+            selected_dimension_rows = entities["dimensions"][:2]
+        if not selected_table_rows:
+            selected_table_rows = [table_lookup.get('order_master', DEFAULT_TABLES[0])]
 
-        prompt_lines.append("候选业务维度:")
-        for dimension_row in selected_dimension_rows or entities["dimensions"][:4]:
-            prompt_lines.append(
-                f"- {dimension_row['dimension_name']}：{dimension_row.get('description', '')}；默认表达式：{dimension_row.get('source_expression', '')}；相关表：{'、'.join(dimension_row.get('related_tables', []))}"
-            )
-
-        prompt_lines.append("候选业务表:")
-        for table_row in selected_table_rows or [table_lookup.get('order_master', DEFAULT_TABLES[0])]:
-            key_fields = []
-            for column in column_map.get(table_row["table_name"], [])[:12]:
-                label = column.get("business_name") or column.get("column_comment") or column["column_name"]
-                key_fields.append(f"{column['column_name']}({label})")
-            prompt_lines.append(
-                f"- {table_row['table_name']}（{table_row['business_name']}，{table_row['table_role']}）：{table_row.get('description', '')}"
-            )
-            prompt_lines.append(f"  常见维度：{'、'.join(table_row.get('business_dimensions', []))}")
-            prompt_lines.append(f"  常见指标：{'、'.join(table_row.get('business_metrics', []))}")
-            prompt_lines.append(f"  关键业务字段：{'、'.join(key_fields)}")
-
-        prompt_lines.append("候选关联关系:")
-        for join_row in selected_join_rows:
-            prompt_lines.append(
-                f"- {join_row['join_condition']}（{join_row.get('description', '')}）"
-            )
-
-        if selected_example_rows:
-            prompt_lines.append("候选相似问法:")
-            for example in selected_example_rows:
-                prompt_lines.append(
-                    f"- 问法：{example.get('question_text', '')}；说明：{example.get('summary_text', '')}；涉及表：{'、'.join(example.get('related_tables', []))}"
-                )
-
-        prompt_lines.append("如果候选表、候选维度和候选指标不足以安全回答当前问题，必须先澄清，不允许臆造字段或关联关系。")
+        prompt_text = _build_semantic_prompt_text(
+            question=question,
+            selected_metric_rows=selected_metric_rows,
+            selected_dimension_rows=selected_dimension_rows,
+            selected_table_rows=selected_table_rows,
+            selected_join_rows=selected_join_rows,
+            selected_example_rows=selected_example_rows,
+            column_map=column_map,
+            prompt_mode="query",
+        )
+        repair_prompt_text = _build_semantic_prompt_text(
+            question=question,
+            selected_metric_rows=selected_metric_rows,
+            selected_dimension_rows=selected_dimension_rows,
+            selected_table_rows=selected_table_rows,
+            selected_join_rows=selected_join_rows,
+            selected_example_rows=[],
+            column_map=column_map,
+            prompt_mode="repair" if prompt_mode == "repair" else "query",
+            extra_sql_text=extra_sql_text,
+        )
 
         return {
             "candidate_tables": [row["table_name"] for row in selected_table_rows],
@@ -1801,7 +2047,8 @@ def retrieve_semantic_context(
             "candidate_dimensions": [row["dimension_name"] for row in selected_dimension_rows] or selected_dimension_names,
             "candidate_joins": selected_join_rows,
             "candidate_examples": [example.get("question_text", "") for example in selected_example_rows],
-            "prompt_text": "\n".join(prompt_lines),
+            "prompt_text": prompt_text,
+            "repair_prompt_text": repair_prompt_text,
         }
 
 

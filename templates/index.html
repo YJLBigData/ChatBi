@@ -35,16 +35,16 @@
         }
 
         .container {
-            max-width: 1220px;
+            max-width: 1480px;
             margin: 0 auto;
-            padding: 24px;
+            padding: 28px;
         }
 
         .card {
             background: var(--panel);
             border: 1px solid var(--border);
             border-radius: 14px;
-            padding: 18px;
+            padding: 20px;
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
             margin-bottom: 16px;
         }
@@ -73,7 +73,7 @@
         }
 
         .message {
-            max-width: 88%;
+            max-width: 92%;
             padding: 12px 14px;
             border-radius: 14px;
             white-space: pre-wrap;
@@ -227,7 +227,7 @@
 
         .meta-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 14px;
         }
 
@@ -699,6 +699,31 @@
             padding: 6px 10px;
             font-size: 12px;
             border-radius: 8px;
+        }
+
+        .copy-feedback {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 10px;
+            border-radius: 8px;
+            background: rgba(10, 127, 71, 0.14);
+            color: var(--ok);
+            font-size: 12px;
+            font-weight: 700;
+            opacity: 0.7;
+            pointer-events: none;
+            animation: copyFadeOut 2s ease forwards;
+        }
+
+        @keyframes copyFadeOut {
+            0% {
+                opacity: 0.7;
+                transform: translateY(0);
+            }
+            100% {
+                opacity: 0;
+                transform: translateY(-2px);
+            }
         }
 
         .log-note {
@@ -1349,7 +1374,7 @@
             && typeof nestedContent.sql === 'string';
         const displayObject = isSqlOnlyResponse
             ? {
-                提示: '模型本轮主要返回 SQL 修复结果，请看页面最下方“生成 SQL”区域。',
+                提示: '模型本轮主要返回 SQL 修复结果，请看页面【生成 SQL】区域内容。',
                 返回类型: 'SQL 修复结果',
                 SQL长度: nestedContent.sql.length,
             }
@@ -1357,8 +1382,26 @@
         return {
             plainText: typeof displayObject === 'string' ? wrapLongText(displayObject) : formatDisplayJson(displayObject),
             rawPlainText: typeof parsed === 'string' ? wrapLongText(parsed) : formatDisplayJson(parsed),
-            note: isSqlOnlyResponse ? '模型本轮主要返回 SQL 修复结果，页面已优先提示你直接查看“生成 SQL”。' : '',
+            note: isSqlOnlyResponse ? '模型本轮主要返回 SQL 修复结果，请看页面【生成 SQL】区域内容。' : '',
         };
+    }
+
+    function showCopyFeedback(button, text = '复制成功') {
+        if (!button || !button.parentElement) {
+            return;
+        }
+        const parent = button.parentElement;
+        const existing = parent.querySelector('.copy-feedback');
+        if (existing) {
+            existing.remove();
+        }
+        const badge = document.createElement('span');
+        badge.className = 'copy-feedback';
+        badge.textContent = text;
+        button.insertAdjacentElement('afterend', badge);
+        window.setTimeout(() => {
+            badge.remove();
+        }, 2000);
     }
 
     function renderExecutionLogs(logs) {
@@ -1412,7 +1455,7 @@
                 const content = logDisplayCache.get(cacheKey) || '';
                 try {
                     await navigator.clipboard.writeText(content);
-                    setStatus(button.dataset.copyType === 'request' ? '请求内容已复制' : '返回内容已复制', 'ok');
+                    showCopyFeedback(button, '复制成功');
                 } catch (error) {
                     setStatus(`复制失败：${error.message}`, 'error');
                 }
