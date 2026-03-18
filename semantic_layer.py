@@ -2081,7 +2081,12 @@ def get_admin_bootstrap() -> dict[str, Any]:
                 cursor.execute(f"SELECT COUNT(*) AS cnt FROM `{config['table']}`")
                 counts[entity] = cursor.fetchone()["cnt"]
             cursor.execute(
-                "SELECT COUNT(*) AS cnt FROM `semantic_search_doc` WHERE `embedding_status` = 'pending' OR `embedding_json` IS NULL OR `embedding_json` = ''"
+                """
+                SELECT COUNT(*) AS cnt
+                FROM `semantic_search_doc`
+                WHERE `is_active` = 1
+                  AND (`embedding_status` = 'pending' OR `embedding_json` IS NULL OR `embedding_json` = '')
+                """
             )
             pending_embeddings = cursor.fetchone()["cnt"]
     payload = {"overview": {"counts": counts, "pending_embeddings": pending_embeddings}}
@@ -2164,7 +2169,7 @@ def get_semantic_maintenance_guide() -> dict[str, list[str]]:
         "steps": [
             "先在后台维护页修改业务域、业务表、指标、维度、关联关系、同义词或问法示例。",
             "如果业务表结构有变化，先点击“同步业务表结构”，把真实表字段备注同步到 semantic_column。",
-            "修改完成后点击“重建检索索引”；如果希望立即刷新向量召回，再点击“刷新向量索引”。",
+            "修改完成后点击“一键刷新重建”，系统会同步重建检索索引并刷新有效文档的向量。",
             "维护指标时，related_tables 要填真实参与计算的表，default_expression 填标准口径表达式，description 填业务口径说明。",
             "维护维度时，source_expression 填默认分组字段或表达式，keywords 填常见自然语言别名。",
             "维护 join 时，join_condition 必须是可直接复制到 SQL 的真实关联条件。",

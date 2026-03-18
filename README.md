@@ -244,8 +244,7 @@ launchctl unload ~/Library/LaunchAgents/com.chatbi.worker.plist
 
 维护建议：
 - 业务表结构变化后，先点击“同步业务表结构”
-- 修改完语义对象后，点击“重建检索索引”
-- 如果希望新配置立即参与向量召回，再点击“刷新向量索引”
+- 修改完语义对象后，点击“一键刷新重建”，系统会同步重建检索索引并刷新有效文档的向量
 - `semantic_column` 和 `semantic_search_doc` 主要是系统生成结果，通常只读
 
 ## 安全说明

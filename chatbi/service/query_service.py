@@ -42,6 +42,9 @@ LOCATION_SUFFIXES = [
     '市',
 ]
 
+QUESTION_PREFIXES = ('统计', '查询', '分析', '查看', '帮我', '请帮我', '请', '麻烦')
+QUESTION_SUFFIXES = ('。', '.', '？', '?', '！', '!')
+
 
 def extract_json_payload(text: str) -> dict[str, Any]:
     content = text.strip()
@@ -172,6 +175,44 @@ def validate_and_normalize_sql(sql: str) -> str:
     return normalized
 
 
+def sanitize_question_for_definition(question: str) -> str:
+    sanitized = compact_whitespace(question or '')
+    for prefix in QUESTION_PREFIXES:
+        if sanitized.startswith(prefix):
+            sanitized = sanitized[len(prefix):].strip()
+            break
+    sanitized = sanitized.strip()
+    while sanitized and sanitized[-1] in QUESTION_SUFFIXES:
+        sanitized = sanitized[:-1].strip()
+    return sanitized or '查询结果'
+
+
+def build_metric_definition_fallback(question: str, metrics: list[str], dimensions: list[str]) -> str:
+    sanitized_question = sanitize_question_for_definition(question)
+    if metrics:
+        metric_part = '、'.join(metrics)
+        if dimensions:
+            return f'{sanitized_question}（维度：{"、".join(dimensions)}；指标：{metric_part}）'
+        return sanitized_question if any(metric in sanitized_question for metric in metrics) else f'{sanitized_question}：{metric_part}'
+    return sanitized_question
+
+
+def build_metric_description_fallback(
+    *,
+    candidate_tables: list[str],
+    metrics: list[str],
+    dimensions: list[str],
+    question: str,
+) -> str:
+    table_part = '、'.join(candidate_tables) if candidate_tables else '候选业务表'
+    metric_part = '、'.join(metrics) if metrics else '相关业务指标'
+    dimension_part = '、'.join(dimensions) if dimensions else '整体汇总'
+    return (
+        f"基于 {table_part} 相关数据，结合当前问题“{sanitize_question_for_definition(question)}”，"
+        f"按 {dimension_part} 统计 {metric_part}。如需精确口径，请以页面【生成 SQL】区域内容为准。"
+    )
+
+
 def run_query(sql: str) -> tuple[list[str], list[dict[str, Any]]]:
     logger.info('sql execute start length=%s', len(sql))
     with get_db_conn() as conn:
@@ -298,10 +339,31 @@ def generate_query_plan_by_llm(
             'model': llm_meta['model'],
             'context_stats': context_stats,
         }
+    if not metrics:
+        metrics = normalize_name_list(semantic_context.get('candidate_metrics', []))[:3]
     if not metric_definition:
-        raise ValueError('模型未返回指标定义')
+        metric_definition = build_metric_definition_fallback(question, metrics, dimensions)
+        logger.warning(
+            'query plan fallback metric_definition conversation_id=%s request_id=%s round_no=%s question=%s',
+            conversation_id,
+            request_id or '',
+            round_no or 0,
+            question[:160],
+        )
     if not metric_description:
-        raise ValueError('模型未返回指标描述')
+        metric_description = build_metric_description_fallback(
+            candidate_tables=semantic_context['candidate_tables'],
+            metrics=metrics,
+            dimensions=dimensions,
+            question=question,
+        )
+        logger.warning(
+            'query plan fallback metric_description conversation_id=%s request_id=%s round_no=%s question=%s',
+            conversation_id,
+            request_id or '',
+            round_no or 0,
+            question[:160],
+        )
     if not metrics:
         raise ValueError('模型未返回指标名称')
     if not sql:

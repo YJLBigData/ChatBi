@@ -183,7 +183,7 @@ def semantic_admin_sync_schema_api():
     try:
         ensure_runtime_ready()
         sync_semantic_schema()
-        result = rebuild_admin_search(refresh_embeddings=False)
+        result = rebuild_admin_search(refresh_embeddings=True)
         return jsonify({'ok': True, 'result': result})
     except Exception as exc:  # noqa: BLE001
         return api_error_response('semantic_admin_sync_schema', exc)
@@ -192,15 +192,15 @@ def semantic_admin_sync_schema_api():
 @app.post('/api/admin/semantic/rebuild')
 def semantic_admin_rebuild_api():
     payload = request.get_json(silent=True) or {}
-    refresh_embeddings = bool(payload.get('refresh_embeddings'))
-    async_mode = bool(payload.get('async', refresh_embeddings))
+    refresh_embeddings = bool(payload.get('refresh_embeddings', True))
+    async_mode = bool(payload.get('async', True))
     client_id = str(payload.get('client_id', '')).strip()
     try:
         ensure_runtime_ready()
         if async_mode:
             task = submit_task(
                 TASK_TYPE_SEMANTIC_REBUILD,
-                '语义索引重建任务',
+                '语义索引一键刷新重建任务',
                 {'refresh_embeddings': refresh_embeddings},
                 client_id=client_id,
             )

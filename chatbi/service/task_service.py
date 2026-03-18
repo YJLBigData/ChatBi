@@ -88,7 +88,7 @@ def execute_task(task: dict[str, Any], worker_id: str) -> dict[str, Any]:
     if task['task_type'] == TASK_TYPE_REPORT_GENERATE:
         return execute_report_generation_task(payload, progress)
     if task['task_type'] == TASK_TYPE_SEMANTIC_REBUILD:
-        progress(20, {'step': '开始重建检索索引'})
+        progress(20, {'step': '开始刷新检索索引与向量'})
         rebuild_result = rebuild_admin_search(refresh_embeddings=bool(payload.get('refresh_embeddings')))
         progress(100, {'result': rebuild_result, 'step': '完成'})
         return {

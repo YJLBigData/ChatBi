@@ -269,7 +269,7 @@
     <div class="topbar">
         <div class="title-box">
             <h1>语义层后台维护</h1>
-            <p>维护业务域、语义表、指标、维度、关联关系和检索索引。修改后会直接影响 ChatBI 候选表召回与 SQL 生成。</p>
+            <p>维护业务域、语义表、指标、维度、关联关系和检索索引。修改后会直接影响 ChatBI 候选表召回、向量检索与 SQL 生成。</p>
         </div>
         <a class="link-btn secondary-btn" href="/">返回 ChatBI 页面</a>
     </div>
@@ -278,8 +278,7 @@
         <div class="overview-grid" id="overviewGrid"></div>
         <div class="actions">
             <button id="syncSchemaBtn" class="secondary-btn">同步业务表结构</button>
-            <button id="rebuildBtn">重建检索索引</button>
-            <button id="refreshVectorBtn" class="secondary-btn">刷新向量索引</button>
+            <button id="rebuildBtn">一键刷新重建</button>
             <button id="reloadBtn" class="secondary-btn">重新加载配置</button>
         </div>
         <div class="status" id="pageStatus">正在加载语义元数据...</div>
@@ -451,7 +450,6 @@
     const pageStatus = document.getElementById('pageStatus');
     const syncSchemaBtn = document.getElementById('syncSchemaBtn');
     const rebuildBtn = document.getElementById('rebuildBtn');
-    const refreshVectorBtn = document.getElementById('refreshVectorBtn');
     const reloadBtn = document.getElementById('reloadBtn');
 
     let adminData = {};
@@ -694,7 +692,7 @@
             return;
         }
         const result = data.result || {};
-        setStatus(`${successMessage} 文档数=${result.docs ?? '-'}，已刷新向量=${result.embeddings ?? 0}`, 'success');
+        setStatus(`${successMessage} 有效文档=${result.docs ?? '-'}，本次刷新向量=${result.embeddings ?? 0}`, 'success');
         await loadBootstrap(false);
         renderTabs();
         renderSections();
@@ -719,7 +717,7 @@
 
     syncSchemaBtn.addEventListener('click', async () => {
         try {
-            await invokeAction('/api/admin/semantic/sync-schema', {}, '业务表结构已同步。');
+            await invokeAction('/api/admin/semantic/sync-schema', {}, '业务表结构已同步并完成一键刷新重建。');
         } catch (error) {
             setStatus(error.message, 'error');
         }
@@ -727,15 +725,7 @@
 
     rebuildBtn.addEventListener('click', async () => {
         try {
-            await invokeAction('/api/admin/semantic/rebuild', { refresh_embeddings: false }, '检索索引已重建。');
-        } catch (error) {
-            setStatus(error.message, 'error');
-        }
-    });
-
-    refreshVectorBtn.addEventListener('click', async () => {
-        try {
-            await invokeAction('/api/admin/semantic/rebuild', { refresh_embeddings: true }, '检索索引和向量已刷新。');
+            await invokeAction('/api/admin/semantic/rebuild', { refresh_embeddings: true, async: true }, '检索索引与向量已提交一键刷新重建任务。');
         } catch (error) {
             setStatus(error.message, 'error');
         }
