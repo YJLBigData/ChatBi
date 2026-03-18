@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from typing import Any
 
@@ -38,6 +39,43 @@ def _loads_json(raw_value: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    content = str(text or '').strip()
+    if not content:
+        return {}
+    code_block = re.search(r'```(?:json)?\s*(\{.*\})\s*```', content, re.IGNORECASE | re.DOTALL)
+    if code_block:
+        content = code_block.group(1).strip()
+    elif not content.startswith('{'):
+        json_match = re.search(r'(\{.*\})', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1).strip()
+    try:
+        payload = json.loads(content)
+    except Exception:  # noqa: BLE001
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_query_preview(request_json: Any) -> str:
+    payload = _loads_json(request_json)
+    messages = payload.get('messages')
+    if not isinstance(messages, list):
+        return ''
+    for message in reversed(messages):
+        if not isinstance(message, dict) or str(message.get('role') or '') != 'user':
+            continue
+        content = str(message.get('content') or '').strip()
+        if not content:
+            continue
+        for pattern in [r'当前用户问题:\s*(.+)', r'当前问题:\s*(.+)']:
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                return str(match.group(1)).strip().splitlines()[0][:160]
+        return content.splitlines()[0][:160]
+    return ''
 
 
 def _summarize_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -370,3 +408,110 @@ def list_llm_invocation_logs(conversation_id: str, limit: int = 200) -> list[dic
             }
         )
     return result
+
+
+def get_latest_task_by_type(task_type: str) -> dict[str, Any] | None:
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT *
+                FROM `async_task`
+                WHERE `task_type` = %s
+                ORDER BY `created_at` DESC, `task_id` DESC
+                LIMIT 1
+                """,
+                (task_type,),
+            )
+            row = cursor.fetchone()
+    return _normalize_task_row(row) if row else None
+
+
+def get_query_plan_quality_stats(limit: int = 200) -> dict[str, Any]:
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT `id`, `conversation_id`, `request_id`, `round_no`, `llm_provider`, `model_name`,
+                       `request_json`, `response_json`, `error_message`, `created_at`
+                FROM `llm_invocation_log`
+                WHERE `stage` = 'query_plan'
+                ORDER BY `id` DESC
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = list(cursor.fetchall())
+
+    stats = {
+        'sample_size': len(rows),
+        'query_count': 0,
+        'clarify_count': 0,
+        'invalid_json_count': 0,
+        'missing_metric_definition_count': 0,
+        'missing_metric_description_count': 0,
+        'missing_metrics_count': 0,
+        'missing_sql_count': 0,
+        'issue_count': 0,
+        'recent_issues': [],
+    }
+
+    for row in rows:
+        response_wrapper = _loads_json(row.get('response_json'))
+        response_payload = _extract_json_object(response_wrapper.get('content'))
+        if not response_payload:
+            stats['invalid_json_count'] += 1
+            stats['issue_count'] += 1
+            stats['recent_issues'].append(
+                {
+                    'created_at': str(row.get('created_at') or ''),
+                    'conversation_id': row.get('conversation_id') or '',
+                    'request_id': row.get('request_id') or '',
+                    'round_no': int(row.get('round_no') or 0),
+                    'llm_provider': row.get('llm_provider') or '',
+                    'model_name': row.get('model_name') or '',
+                    'question_preview': _extract_query_preview(row.get('request_json')),
+                    'missing_fields': ['响应不是有效 JSON'],
+                    'error_message': row.get('error_message') or '',
+                }
+            )
+            continue
+
+        action = str(response_payload.get('action', 'query')).strip().lower()
+        if action == 'clarify':
+            stats['clarify_count'] += 1
+            continue
+
+        stats['query_count'] += 1
+        missing_fields: list[str] = []
+        if not str(response_payload.get('metric_definition', '')).strip():
+            stats['missing_metric_definition_count'] += 1
+            missing_fields.append('metric_definition')
+        if not str(response_payload.get('metric_description', '')).strip():
+            stats['missing_metric_description_count'] += 1
+            missing_fields.append('metric_description')
+        metrics = response_payload.get('metrics')
+        if not isinstance(metrics, list) or not [str(item).strip() for item in metrics if str(item).strip()]:
+            stats['missing_metrics_count'] += 1
+            missing_fields.append('metrics')
+        if not str(response_payload.get('sql', '')).strip():
+            stats['missing_sql_count'] += 1
+            missing_fields.append('sql')
+        if missing_fields:
+            stats['issue_count'] += 1
+            stats['recent_issues'].append(
+                {
+                    'created_at': str(row.get('created_at') or ''),
+                    'conversation_id': row.get('conversation_id') or '',
+                    'request_id': row.get('request_id') or '',
+                    'round_no': int(row.get('round_no') or 0),
+                    'llm_provider': row.get('llm_provider') or '',
+                    'model_name': row.get('model_name') or '',
+                    'question_preview': _extract_query_preview(row.get('request_json')),
+                    'missing_fields': missing_fields,
+                    'error_message': row.get('error_message') or '',
+                }
+            )
+
+    stats['recent_issues'] = stats['recent_issues'][:10]
+    return stats

@@ -12,6 +12,8 @@ import pymysql
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from chatbi.config import TASK_TYPE_SEMANTIC_REBUILD
+from chatbi.repository.task_repository import get_latest_task_by_type, get_query_plan_quality_stats
 from chatbi.utils.question_utils import is_context_dependent_question
 
 
@@ -2089,7 +2091,30 @@ def get_admin_bootstrap() -> dict[str, Any]:
                 """
             )
             pending_embeddings = cursor.fetchone()["cnt"]
-    payload = {"overview": {"counts": counts, "pending_embeddings": pending_embeddings}}
+    latest_rebuild_task = get_latest_task_by_type(TASK_TYPE_SEMANTIC_REBUILD) or {}
+    latest_rebuild_result = latest_rebuild_task.get('result') if latest_rebuild_task else {}
+    latest_rebuild = {
+        'task_id': latest_rebuild_task.get('task_id', ''),
+        'display_name': latest_rebuild_task.get('display_name', ''),
+        'status': latest_rebuild_task.get('status', ''),
+        'progress': latest_rebuild_task.get('progress', 0),
+        'created_at': latest_rebuild_task.get('created_at', ''),
+        'started_at': latest_rebuild_task.get('started_at', ''),
+        'finished_at': latest_rebuild_task.get('finished_at', ''),
+        'docs': (latest_rebuild_result.get('result') or {}).get('docs')
+        if isinstance(latest_rebuild_result, dict) and isinstance(latest_rebuild_result.get('result'), dict)
+        else latest_rebuild_result.get('docs') if isinstance(latest_rebuild_result, dict) else None,
+        'embeddings': (latest_rebuild_result.get('result') or {}).get('embeddings')
+        if isinstance(latest_rebuild_result, dict) and isinstance(latest_rebuild_result.get('result'), dict)
+        else latest_rebuild_result.get('embeddings') if isinstance(latest_rebuild_result, dict) else None,
+        'step': latest_rebuild_result.get('step', '') if isinstance(latest_rebuild_result, dict) else '',
+        'error_message': latest_rebuild_task.get('error_message', ''),
+    }
+    payload = {
+        "overview": {"counts": counts, "pending_embeddings": pending_embeddings},
+        "latest_rebuild": latest_rebuild,
+        "query_plan_quality": get_query_plan_quality_stats(limit=200),
+    }
     for entity in ADMIN_ENTITY_CONFIG:
         payload[entity] = list_admin_entity(entity)
     return payload

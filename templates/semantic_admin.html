@@ -66,6 +66,78 @@
             gap: 12px;
         }
 
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        .detail-card {
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px 16px;
+            background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+        }
+
+        .detail-card h3 {
+            margin: 0 0 10px;
+            font-size: 16px;
+        }
+
+        .detail-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px 12px;
+            margin-bottom: 12px;
+        }
+
+        .detail-item {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .detail-item strong {
+            display: block;
+            color: var(--text);
+            font-size: 14px;
+            margin-top: 2px;
+            word-break: break-word;
+        }
+
+        .issue-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .issue-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: #fff;
+        }
+
+        .issue-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .issue-fields {
+            font-size: 12px;
+            color: var(--danger);
+            margin-bottom: 6px;
+        }
+
+        .issue-question {
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
         .overview-item {
             border: 1px solid var(--border);
             border-radius: 12px;
@@ -281,6 +353,17 @@
             <button id="rebuildBtn">一键刷新重建</button>
             <button id="reloadBtn" class="secondary-btn">重新加载配置</button>
         </div>
+        <div class="detail-grid">
+            <div class="detail-card">
+                <h3>最近一次一键刷新结果</h3>
+                <div class="detail-meta" id="latestRebuildMeta"></div>
+            </div>
+            <div class="detail-card">
+                <h3>模型漏返字段监控</h3>
+                <div class="detail-meta" id="qualityMeta"></div>
+                <div class="issue-list" id="qualityIssues"></div>
+            </div>
+        </div>
         <div class="status" id="pageStatus">正在加载语义元数据...</div>
     </div>
 
@@ -448,6 +531,9 @@
     const sectionTabs = document.getElementById('sectionTabs');
     const sectionContainer = document.getElementById('sectionContainer');
     const pageStatus = document.getElementById('pageStatus');
+    const latestRebuildMeta = document.getElementById('latestRebuildMeta');
+    const qualityMeta = document.getElementById('qualityMeta');
+    const qualityIssues = document.getElementById('qualityIssues');
     const syncSchemaBtn = document.getElementById('syncSchemaBtn');
     const rebuildBtn = document.getElementById('rebuildBtn');
     const reloadBtn = document.getElementById('reloadBtn');
@@ -489,6 +575,49 @@
                 <div class="overview-value">${escapeHtml(value)}</div>
             </div>
         `).join('');
+    }
+
+    function renderLatestRebuild(detail) {
+        const items = [
+            ['任务名称', detail.display_name || '暂无记录'],
+            ['任务状态', detail.status || '-'],
+            ['任务进度', detail.progress ?? '-'],
+            ['文档数量', detail.docs ?? '-'],
+            ['本次刷新向量', detail.embeddings ?? '-'],
+            ['执行阶段', detail.step || '-'],
+            ['开始时间', detail.started_at || '-'],
+            ['完成时间', detail.finished_at || '-'],
+        ];
+        latestRebuildMeta.innerHTML = items.map(([label, value]) => `
+            <div class="detail-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></div>
+        `).join('');
+    }
+
+    function renderQualityStats(quality) {
+        const items = [
+            ['采样条数', quality.sample_size || 0],
+            ['查询返回次数', quality.query_count || 0],
+            ['澄清返回次数', quality.clarify_count || 0],
+            ['漏返指标定义', quality.missing_metric_definition_count || 0],
+            ['漏返指标描述', quality.missing_metric_description_count || 0],
+            ['漏返指标数组', quality.missing_metrics_count || 0],
+            ['漏返 SQL', quality.missing_sql_count || 0],
+            ['异常条数', quality.issue_count || 0],
+        ];
+        qualityMeta.innerHTML = items.map(([label, value]) => `
+            <div class="detail-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></div>
+        `).join('');
+        const issues = Array.isArray(quality.recent_issues) ? quality.recent_issues : [];
+        qualityIssues.innerHTML = issues.length ? issues.map(issue => `
+            <div class="issue-item">
+                <div class="issue-top">
+                    <span>${escapeHtml(issue.created_at || '-')}</span>
+                    <span>${escapeHtml(issue.model_name || '')}</span>
+                </div>
+                <div class="issue-fields">缺失字段：${escapeHtml((issue.missing_fields || []).join('、') || '无')}</div>
+                <div class="issue-question">${escapeHtml(issue.question_preview || '未解析到问题内容')}</div>
+            </div>
+        `).join('') : '<div class="hint">最近采样中未发现模型漏返字段问题。</div>';
     }
 
     function renderGuide(guide) {
@@ -709,6 +838,8 @@
         }
         adminData = data;
         renderOverview(data.overview || {});
+        renderLatestRebuild(data.latest_rebuild || {});
+        renderQualityStats(data.query_plan_quality || {});
         renderGuide(data.maintenance_guide || { steps: [], tables: [] });
         Object.keys(ENTITY_CONFIG).forEach(entity => {
             adminData[entity] = Array.isArray(data[entity]) ? data[entity] : [];
