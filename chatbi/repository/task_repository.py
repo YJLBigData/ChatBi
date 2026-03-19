@@ -94,7 +94,10 @@ def _summarize_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _normalize_task_row(row: dict[str, Any]) -> dict[str, Any]:
+def _normalize_task_row(row: dict[str, Any], *, summarize_payload: bool = True) -> dict[str, Any]:
+    payload = _loads_json(row.get('payload_json'))
+    if summarize_payload:
+        payload = _summarize_task_payload(payload)
     return {
         'task_id': row['task_id'],
         'task_type': row['task_type'],
@@ -107,7 +110,7 @@ def _normalize_task_row(row: dict[str, Any]) -> dict[str, Any]:
         'worker_id': row.get('worker_id') or '',
         'claim_token': row.get('claim_token') or '',
         'lease_expires_at': str(row.get('lease_expires_at') or ''),
-        'payload': _summarize_task_payload(_loads_json(row.get('payload_json'))),
+        'payload': payload,
         'result': _loads_json(row.get('result_json')),
         'error_message': row.get('error_message') or '',
         'created_at': str(row.get('created_at') or ''),
@@ -155,7 +158,7 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         with conn.cursor() as cursor:
             cursor.execute('SELECT * FROM `async_task` WHERE `task_id` = %s', (task_id,))
             row = cursor.fetchone()
-    return _normalize_task_row(row) if row else None
+    return _normalize_task_row(row, summarize_payload=True) if row else None
 
 
 def list_tasks(*, client_id: str | None = None, conversation_id: str | None = None, limit: int = TASK_POLL_LIMIT) -> list[dict[str, Any]]:
@@ -177,7 +180,7 @@ def list_tasks(*, client_id: str | None = None, conversation_id: str | None = No
                 tuple(params + [int(limit)]),
             )
             rows = list(cursor.fetchall())
-    return [_normalize_task_row(row) for row in rows]
+    return [_normalize_task_row(row, summarize_payload=True) for row in rows]
 
 
 def requeue_expired_tasks(limit: int) -> int:
@@ -237,7 +240,7 @@ def claim_next_task(worker_id: str, lease_seconds: int) -> dict[str, Any] | None
             cursor.execute('SELECT * FROM `async_task` WHERE `claim_token` = %s LIMIT 1', (claim_token,))
             row = cursor.fetchone()
         conn.commit()
-    return _normalize_task_row(row) if row else None
+    return _normalize_task_row(row, summarize_payload=False) if row else None
 
 
 def heartbeat_task(task_id: str, worker_id: str, lease_seconds: int, progress: int | None = None, result: dict[str, Any] | None = None) -> None:

@@ -1018,14 +1018,32 @@ def add_chart_snapshots(document: Document, chart_images: list[dict[str, Any]], 
     if not chart_images:
         add_body_paragraph(document, styles, "当前结果未生成可嵌入的图表快照。")
         return
-    for chart in chart_images:
+    for index, chart in enumerate(chart_images, start=1):
         add_heading(document, styles, chart.get("title", "图表快照"), level=2)
-        image_bytes = decode_data_url(chart.get("png_data_url", ""))
+        image_data_url = chart.get("png_data_url", "")
+        image_bytes = decode_data_url(image_data_url)
         if not image_bytes:
+            logger.warning(
+                'chart snapshot skipped index=%s title=%s data_url_length=%s reason=decode_failed',
+                index,
+                str(chart.get("title", "")).strip() or '图表快照',
+                len(str(image_data_url or "")),
+            )
             add_body_paragraph(document, styles, "图表图片生成失败，已跳过。")
             continue
         picture_stream = io.BytesIO(image_bytes)
-        document.add_picture(picture_stream, width=Inches(6.5))
+        try:
+            document.add_picture(picture_stream, width=Inches(6.5))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                'chart snapshot skipped index=%s title=%s bytes=%s reason=add_picture_failed error=%s',
+                index,
+                str(chart.get("title", "")).strip() or '图表快照',
+                len(image_bytes),
+                exc,
+            )
+            add_body_paragraph(document, styles, "图表图片写入 Word 失败，已跳过。")
+            continue
         if chart.get("caption"):
             add_body_paragraph(document, styles, chart["caption"])
 
@@ -1063,7 +1081,7 @@ def decode_data_url(data_url: str) -> bytes:
     if not data_url or "," not in data_url:
         return b""
     try:
-        return base64.b64decode(data_url.split(",", 1)[1])
+        return base64.b64decode(str(data_url).split(",", 1)[1].strip())
     except Exception:  # noqa: BLE001
         return b""
 
