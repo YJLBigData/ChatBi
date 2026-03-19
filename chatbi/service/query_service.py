@@ -54,6 +54,10 @@ ORDER_GROUP_DOUBLE_QUOTED_PATTERN = re.compile(
     r'(?P<clause>\b(?:ORDER\s+BY|GROUP\s+BY|PARTITION\s+BY)\s+)"(?P<identifier>[^"\n]+)"',
     re.IGNORECASE,
 )
+COLUMN_REF_PATTERN = re.compile(
+    r'\b(order_master|order_detail|refund_master|refund_detail|store_info|user_info|product_info)\.([a-zA-Z_][\w]*)\b',
+    re.IGNORECASE,
+)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -217,6 +221,34 @@ def validate_and_normalize_sql(sql: str) -> str:
     return normalized
 
 
+def extract_expression_columns(expression: str) -> set[str]:
+    if not expression:
+        return set()
+    return {match.group(2).lower() for match in COLUMN_REF_PATTERN.finditer(str(expression))}
+
+
+def find_matching_rules(
+    selected_names: list[str],
+    candidate_rules: list[dict[str, Any]],
+    *,
+    name_key: str,
+) -> list[dict[str, Any]]:
+    if not candidate_rules:
+        return []
+    if not selected_names:
+        return candidate_rules
+
+    normalized_selected = [compact_whitespace(name).lower() for name in selected_names if name]
+    matched_rules: list[dict[str, Any]] = []
+    for rule in candidate_rules:
+        rule_name = compact_whitespace(str(rule.get(name_key, ''))).lower()
+        if not rule_name:
+            continue
+        if any(rule_name == selected or rule_name in selected or selected in rule_name for selected in normalized_selected):
+            matched_rules.append(rule)
+    return matched_rules or candidate_rules
+
+
 def sanitize_question_for_definition(question: str) -> str:
     sanitized = compact_whitespace(question or '')
     for prefix in QUESTION_PREFIXES:
@@ -253,6 +285,58 @@ def build_metric_description_fallback(
         f"基于 {table_part} 相关数据，结合当前问题“{sanitize_question_for_definition(question)}”，"
         f"按 {dimension_part} 统计 {metric_part}。如需精确口径，请以页面【生成 SQL】区域内容为准。"
     )
+
+
+def extract_expression_column_refs(expression: str) -> tuple[set[str], set[str]]:
+    qualified_refs: set[str] = set()
+    bare_columns: set[str] = set()
+    for table_name, column_name in COLUMN_REF_PATTERN.findall(str(expression or '')):
+        qualified_refs.add(f'{table_name.lower()}.{column_name.lower()}')
+        bare_columns.add(column_name.lower())
+    return qualified_refs, bare_columns
+
+
+def sql_mentions_semantic_columns(sql: str, expression: str) -> bool:
+    qualified_refs, bare_columns = extract_expression_column_refs(expression)
+    if not qualified_refs and not bare_columns:
+        return True
+    normalized_sql = str(sql or '').lower().replace('`', '')
+    if any(ref in normalized_sql for ref in qualified_refs):
+        return True
+    return any(re.search(rf'\b{re.escape(column_name)}\b', normalized_sql) for column_name in bare_columns)
+
+
+def validate_semantic_alignment(
+    sql: str,
+    *,
+    selected_dimensions: list[str],
+    selected_metrics: list[str],
+    candidate_group_dimension_rules: list[dict[str, Any]] | None = None,
+    candidate_metric_rules: list[dict[str, Any]] | None = None,
+) -> None:
+    dimension_rules = find_matching_rules(
+        selected_dimensions,
+        candidate_group_dimension_rules or [],
+        name_key='dimension_name',
+    )
+    metric_rules = find_matching_rules(
+        selected_metrics,
+        candidate_metric_rules or [],
+        name_key='metric_name',
+    )
+    issues: list[str] = []
+    for rule in dimension_rules:
+        dimension_name = str(rule.get('dimension_name', '')).strip()
+        source_expression = str(rule.get('source_expression', '')).strip()
+        if dimension_name and source_expression and not sql_mentions_semantic_columns(sql, source_expression):
+            issues.append(f'维度“{dimension_name}”必须使用 {source_expression}')
+    for rule in metric_rules:
+        metric_name = str(rule.get('metric_name', '')).strip()
+        default_expression = str(rule.get('default_expression', '')).strip()
+        if metric_name and default_expression and not sql_mentions_semantic_columns(sql, default_expression):
+            issues.append(f'指标“{metric_name}”必须命中 {default_expression}')
+    if issues:
+        raise ValueError('业务语义校验失败：' + '；'.join(issues))
 
 
 def run_query(sql: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -365,8 +449,8 @@ def generate_query_plan_by_llm(
         return {
             'action': action,
             'assistant_message': assistant_message,
-            'dimensions': [],
-            'metrics': [],
+            'dimensions': normalize_name_list(semantic_context.get('candidate_dimensions', [])),
+            'metrics': normalize_name_list(semantic_context.get('candidate_metrics', [])),
             'chart_title': '',
             'chart_label_field': '',
             'chart_value_field': '',
@@ -376,6 +460,10 @@ def generate_query_plan_by_llm(
             'time_range_end': '',
             'candidate_tables': semantic_context['candidate_tables'],
             'candidate_metrics': semantic_context['candidate_metrics'],
+            'candidate_dimensions': semantic_context.get('candidate_dimensions', []),
+            'candidate_group_dimension_rules': semantic_context.get('candidate_group_dimension_rules', []),
+            'candidate_metric_rules': semantic_context.get('candidate_metric_rules', []),
+            'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
             'llm_provider': llm_meta['provider'],
             'llm_provider_label': llm_meta['label'],
             'model': llm_meta['model'],
@@ -427,6 +515,10 @@ def generate_query_plan_by_llm(
         'time_range_end': time_range_end,
         'candidate_tables': semantic_context['candidate_tables'],
         'candidate_metrics': semantic_context['candidate_metrics'],
+        'candidate_dimensions': semantic_context.get('candidate_dimensions', []),
+        'candidate_group_dimension_rules': semantic_context.get('candidate_group_dimension_rules', []),
+        'candidate_metric_rules': semantic_context.get('candidate_metric_rules', []),
+        'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
         'llm_provider': llm_meta['provider'],
         'llm_provider_label': llm_meta['label'],
         'model': llm_meta['model'],
@@ -527,17 +619,35 @@ def handle_user_query(
     if llm_result['action'] == 'clarify':
         append_conversation_message(conversation_id, 'user', question)
         append_conversation_message(conversation_id, 'assistant', llm_result['assistant_message'], llm_result['assistant_message'])
-        return {
+        clarify_payload = {
             'conversation_id': conversation_id,
             'reply_type': 'clarify',
             'assistant_message': llm_result['assistant_message'],
+            'question': question,
+            'dimensions': llm_result.get('dimensions', []),
+            'metrics': llm_result.get('metrics', []),
+            'candidate_tables': llm_result.get('candidate_tables', []),
+            'candidate_metrics': llm_result.get('candidate_metrics', []),
+            'candidate_dimensions': llm_result.get('candidate_dimensions', []),
+            'candidate_group_dimension_rules': llm_result.get('candidate_group_dimension_rules', []),
+            'candidate_metric_rules': llm_result.get('candidate_metric_rules', []),
+            'candidate_dimension_rules': llm_result.get('candidate_dimension_rules', []),
             'llm_provider': llm_result['llm_provider'],
             'llm_provider_label': llm_result['llm_provider_label'],
             'model': llm_result['model'],
             'context_stats': llm_result['context_stats'],
         }
+        save_latest_result(conversation_id, clarify_payload)
+        return clarify_payload
     sql = normalize_sql_filter_values(validate_and_normalize_sql(llm_result['sql']))
     try:
+        validate_semantic_alignment(
+            sql,
+            selected_dimensions=llm_result.get('dimensions', []),
+            selected_metrics=llm_result.get('metrics', []),
+            candidate_group_dimension_rules=llm_result.get('candidate_group_dimension_rules', []),
+            candidate_metric_rules=llm_result.get('candidate_metric_rules', []),
+        )
         columns, rows = run_query(sql)
     except Exception as query_exc:  # noqa: BLE001
         logger.warning(
@@ -560,6 +670,13 @@ def handle_user_query(
             round_no=round_no,
         )
         sql = normalize_sql_filter_values(validate_and_normalize_sql(repaired_sql))
+        validate_semantic_alignment(
+            sql,
+            selected_dimensions=llm_result.get('dimensions', []),
+            selected_metrics=llm_result.get('metrics', []),
+            candidate_group_dimension_rules=llm_result.get('candidate_group_dimension_rules', []),
+            candidate_metric_rules=llm_result.get('candidate_metric_rules', []),
+        )
         columns, rows = run_query(sql)
     assistant_display = (
         f"{llm_result['assistant_message']}\n"

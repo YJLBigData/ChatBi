@@ -28,10 +28,11 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '8) 若问销售金额、销量、GMV且未指定状态，默认统计 已支付、已发货、已完成、部分退款。'
         '9) 商品粒度销售金额必须用 order_detail.line_paid_amount 或 line_gross_amount；只要涉及品牌、产品、品类、SKU 分析或这些条件过滤，退款金额和退款率必须优先走 refund_detail 口径，并通过 order_detail 关联，禁止直接把 refund_master.order_id 级退款金额分摊到商品粒度。'
         '10) 下单日期只能用 created_at 或 DATE(order_master.created_at)，禁止使用 order_date、pay_date、ship_date 等虚拟列。'
-        '11) SQL 必须兼容 MySQL 8；中文别名请使用反引号或裸别名，禁止使用双引号引用标识符。'
-        '12) 日期区间优先使用 DATE_SUB、DATE_ADD、DATE() 等 MySQL 常见写法。'
-        '13) 只能使用候选语义层里真实出现的表、字段和关联关系；sql 只能是 SELECT 或 WITH；未限制条数时默认 LIMIT 200。'
-        '14) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
+        '11) 用户问“大区、省份、城市、组织”这类经营区域维度时，优先使用 store_info；如果问题同时出现“大区”和“省份”且未明确写“收货省份”，省份默认理解为 store_info.province，不要误用 order_master.receiver_province。'
+        '12) SQL 必须兼容 MySQL 8；中文别名请使用反引号或裸别名，禁止使用双引号引用标识符。'
+        '13) 日期区间优先使用 DATE_SUB、DATE_ADD、DATE() 等 MySQL 常见写法。'
+        '14) 只能使用候选语义层里真实出现的表、字段和关联关系；sql 只能是 SELECT 或 WITH；未限制条数时默认 LIMIT 200。'
+        '15) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
     )
     user_prompt = semantic_prompt_text
     if history_text and history_text.strip() not in {'无', '无历史对话'}:
