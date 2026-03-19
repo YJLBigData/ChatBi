@@ -359,6 +359,11 @@
                 <div class="detail-meta" id="latestRebuildMeta"></div>
             </div>
             <div class="detail-card">
+                <h3>原始数据质量巡检</h3>
+                <div class="detail-meta" id="dataQualityMeta"></div>
+                <div class="issue-list" id="dataQualityIssues"></div>
+            </div>
+            <div class="detail-card">
                 <h3>模型漏返字段监控</h3>
                 <div class="detail-meta" id="qualityMeta"></div>
                 <div class="issue-list" id="qualityIssues"></div>
@@ -532,6 +537,8 @@
     const sectionContainer = document.getElementById('sectionContainer');
     const pageStatus = document.getElementById('pageStatus');
     const latestRebuildMeta = document.getElementById('latestRebuildMeta');
+    const dataQualityMeta = document.getElementById('dataQualityMeta');
+    const dataQualityIssues = document.getElementById('dataQualityIssues');
     const qualityMeta = document.getElementById('qualityMeta');
     const qualityIssues = document.getElementById('qualityIssues');
     const syncSchemaBtn = document.getElementById('syncSchemaBtn');
@@ -618,6 +625,33 @@
                 <div class="issue-question">${escapeHtml(issue.question_preview || '未解析到问题内容')}</div>
             </div>
         `).join('') : '<div class="hint">最近采样中未发现模型漏返字段问题。</div>';
+    }
+
+    function renderDataQuality(payload) {
+        const latest = payload.latest_run || {};
+        const summary = latest.summary || {};
+        const items = [
+            ['巡检状态', latest.status || '暂无记录'],
+            ['修复记录数', latest.fixed_count ?? 0],
+            ['问题条数', latest.issue_count ?? 0],
+            ['开始时间', latest.started_at || '-'],
+            ['完成时间', latest.finished_at || '-'],
+            ['检查时间', summary.checked_at || '-'],
+        ];
+        dataQualityMeta.innerHTML = items.map(([label, value]) => `
+            <div class="detail-item">${escapeHtml(label)}<strong>${escapeHtml(value)}</strong></div>
+        `).join('');
+        const issues = Array.isArray(payload.issues) ? payload.issues : [];
+        dataQualityIssues.innerHTML = issues.length ? issues.map(issue => `
+            <div class="issue-item">
+                <div class="issue-top">
+                    <span>${escapeHtml(issue.affected_table || '-')}</span>
+                    <span>${escapeHtml(issue.severity || '')}</span>
+                </div>
+                <div class="issue-fields">问题数：${escapeHtml(issue.issue_count || 0)}；样例：${escapeHtml(issue.sample_value || '--')}</div>
+                <div class="issue-question">${escapeHtml(issue.message || '')}</div>
+            </div>
+        `).join('') : '<div class="hint">当前原始数据未发现阻断级质量问题。</div>';
     }
 
     function renderGuide(guide) {
@@ -839,6 +873,7 @@
         adminData = data;
         renderOverview(data.overview || {});
         renderLatestRebuild(data.latest_rebuild || {});
+        renderDataQuality(data.data_quality || {});
         renderQualityStats(data.query_plan_quality || {});
         renderGuide(data.maintenance_guide || { steps: [], tables: [] });
         Object.keys(ENTITY_CONFIG).forEach(entity => {

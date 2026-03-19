@@ -1,5 +1,6 @@
 from chatbi.config import RUNTIME_BOOTSTRAP_LOCK_NAME
 from chatbi.repository.db import ensure_table_columns, get_db_conn
+from chatbi.service.data_quality_service import ensure_data_quality_runtime, run_data_quality_audit
 from chatbi.schema.runtime_schema import (
     ASYNC_TASK_DDL,
     ASYNC_TASK_MIGRATIONS,
@@ -49,7 +50,9 @@ def ensure_runtime_ready() -> None:
                 ensure_table_columns(cursor, 'async_task', ASYNC_TASK_MIGRATIONS)
                 ensure_table_columns(cursor, 'llm_invocation_log', LLM_INVOCATION_LOG_MIGRATIONS)
                 ensure_reporting_runtime(conn)
+                ensure_data_quality_runtime(conn)
             conn.commit()
+            run_data_quality_audit(conn, run_type='runtime', auto_fix=True)
             ensure_semantic_runtime(refresh_embeddings=False)
         finally:
             release_runtime_lock(conn)

@@ -41,6 +41,24 @@ LOCATION_SUFFIXES = [
     '省',
     '市',
 ]
+ORDER_STATUS_LITERAL_MAP = {
+    'pending': '待支付',
+    'unpaid': '待支付',
+    'paid': '已支付',
+    'shipped': '已发货',
+    'fulfilled': '已完成',
+    'completed': '已完成',
+    'partial_refund': '部分退款',
+    'partial refunded': '部分退款',
+    'refunded': '已退款',
+    'cancelled': '已取消',
+    'canceled': '已取消',
+}
+DEFAULT_PAYING_ORDER_STATUSES = ('已支付', '已发货', '已完成', '部分退款')
+ORDER_STATUS_PATTERN = re.compile(
+    r"(?P<lhs>(?:\b\w+\.)?order_status)\s+IN\s*\((?P<values>[^)]*)\)|(?P<lhs_eq>(?:\b\w+\.)?order_status)\s*=\s*'(?P<value>[^']*)'",
+    re.IGNORECASE,
+)
 
 QUESTION_PREFIXES = ('统计', '查询', '分析', '查看', '帮我', '请帮我', '请', '麻烦')
 QUESTION_SUFFIXES = ('。', '.', '？', '?', '！', '!')
@@ -161,6 +179,29 @@ def normalize_sql_filter_values(sql: str) -> str:
     return normalized_sql
 
 
+def normalize_order_status_filter_values(sql: str) -> str:
+    if not sql:
+        return sql
+
+    def map_value(raw_value: str) -> str:
+        normalized = compact_whitespace(raw_value).lower()
+        return ORDER_STATUS_LITERAL_MAP.get(normalized, raw_value)
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group('lhs'):
+            raw_values = re.findall(r"'([^']*)'", match.group('values') or '')
+            mapped_values = [map_value(value) for value in raw_values]
+            formatted = ', '.join(f"'{value}'" for value in mapped_values)
+            return f"{match.group('lhs')} IN ({formatted})"
+        mapped = map_value(match.group('value') or '')
+        return f"{match.group('lhs_eq')} = '{mapped}'"
+
+    normalized_sql = ORDER_STATUS_PATTERN.sub(replace, sql)
+    if normalized_sql != sql:
+        logger.info('sql order_status literals normalized original=%s normalized=%s', sql[:800], normalized_sql[:800])
+    return normalized_sql
+
+
 def normalize_mysql_date_interval_expressions(sql: str) -> str:
     def replace(match: re.Match[str]) -> str:
         fn = 'DATE_SUB' if match.group('op') == '-' else 'DATE_ADD'
@@ -190,7 +231,41 @@ def normalize_mysql_identifier_quotes(sql: str) -> str:
 def normalize_sql_mysql_dialect(sql: str) -> str:
     normalized_sql = normalize_mysql_identifier_quotes(str(sql or '').strip())
     normalized_sql = normalize_mysql_date_interval_expressions(normalized_sql)
+    normalized_sql = normalize_order_status_filter_values(normalized_sql)
     return normalized_sql
+
+
+def question_has_explicit_order_status(question: str) -> bool:
+    normalized_question = compact_whitespace(question or '')
+    return any(status in normalized_question for status in ('待支付', '已支付', '已发货', '已完成', '部分退款', '已退款', '已取消'))
+
+
+def apply_default_metric_filters(sql: str, question: str, selected_metrics: list[str]) -> str:
+    normalized_sql = str(sql or '').strip()
+    if '支付买家数' not in (selected_metrics or []) or question_has_explicit_order_status(question):
+        return normalized_sql
+
+    default_clause = "order_master.order_status IN ('已支付', '已发货', '已完成', '部分退款')"
+
+    if ORDER_STATUS_PATTERN.search(normalized_sql):
+        replaced_sql = ORDER_STATUS_PATTERN.sub(default_clause, normalized_sql)
+        if replaced_sql != normalized_sql:
+            logger.info('sql default pay_buyer_count order_status enforced sql=%s', replaced_sql[:800])
+        return replaced_sql
+
+    lower_sql = normalized_sql.lower()
+    insertion_points = [' group by ', ' order by ', ' limit ']
+    insert_at = len(normalized_sql)
+    for marker in insertion_points:
+        position = lower_sql.find(marker)
+        if position != -1:
+            insert_at = min(insert_at, position)
+    if ' where ' in lower_sql:
+        rewritten_sql = f"{normalized_sql[:insert_at]} AND {default_clause}{normalized_sql[insert_at:]}"
+    else:
+        rewritten_sql = f"{normalized_sql[:insert_at]} WHERE {default_clause}{normalized_sql[insert_at:]}"
+    logger.info('sql default pay_buyer_count order_status appended sql=%s', rewritten_sql[:800])
+    return rewritten_sql
 
 
 def validate_and_normalize_sql(sql: str) -> str:
@@ -309,6 +384,7 @@ def sql_mentions_semantic_columns(sql: str, expression: str) -> bool:
 def validate_semantic_alignment(
     sql: str,
     *,
+    question: str,
     selected_dimensions: list[str],
     selected_metrics: list[str],
     candidate_group_dimension_rules: list[dict[str, Any]] | None = None,
@@ -335,6 +411,16 @@ def validate_semantic_alignment(
         default_expression = str(rule.get('default_expression', '')).strip()
         if metric_name and default_expression and not sql_mentions_semantic_columns(sql, default_expression):
             issues.append(f'指标“{metric_name}”必须命中 {default_expression}')
+        if metric_name == '支付买家数':
+            normalized_sql = str(sql or '').lower().replace('`', '')
+            if 'order_status' not in normalized_sql and 'payment_status' not in normalized_sql:
+                issues.append('指标“支付买家数”必须显式限定支付或履约订单状态')
+            normalized_question = compact_whitespace(question or '')
+            explicit_status = any(status in normalized_question for status in ('待支付', '已支付', '已发货', '已完成', '部分退款', '已退款', '已取消'))
+            if not explicit_status and 'order_status' in normalized_sql:
+                missing_statuses = [status for status in DEFAULT_PAYING_ORDER_STATUSES if status not in normalized_sql]
+                if missing_statuses:
+                    issues.append(f'指标“支付买家数”默认需要纳入 {",".join(DEFAULT_PAYING_ORDER_STATUSES)}')
     if issues:
         raise ValueError('业务语义校验失败：' + '；'.join(issues))
 
@@ -640,9 +726,11 @@ def handle_user_query(
         save_latest_result(conversation_id, clarify_payload)
         return clarify_payload
     sql = normalize_sql_filter_values(validate_and_normalize_sql(llm_result['sql']))
+    sql = apply_default_metric_filters(sql, question, llm_result.get('metrics', []))
     try:
         validate_semantic_alignment(
             sql,
+            question=question,
             selected_dimensions=llm_result.get('dimensions', []),
             selected_metrics=llm_result.get('metrics', []),
             candidate_group_dimension_rules=llm_result.get('candidate_group_dimension_rules', []),
@@ -670,8 +758,10 @@ def handle_user_query(
             round_no=round_no,
         )
         sql = normalize_sql_filter_values(validate_and_normalize_sql(repaired_sql))
+        sql = apply_default_metric_filters(sql, question, llm_result.get('metrics', []))
         validate_semantic_alignment(
             sql,
+            question=question,
             selected_dimensions=llm_result.get('dimensions', []),
             selected_metrics=llm_result.get('metrics', []),
             candidate_group_dimension_rules=llm_result.get('candidate_group_dimension_rules', []),

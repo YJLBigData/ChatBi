@@ -7,28 +7,14 @@ from decimal import Decimal, ROUND_HALF_UP
 import pymysql
 from dotenv import load_dotenv
 
+from chatbi.domain.geo_catalog import city_meta, city_names, province_meta, province_names
+from chatbi.service.data_quality_service import ensure_data_quality_runtime, run_data_quality_audit
 from semantic_layer import ensure_semantic_runtime
 
 
 load_dotenv()
 random.seed(20260313)
 
-
-PROVINCE_CITY_REGION = {
-    "北京": {"region": "华北大区", "cities": ["北京"]},
-    "上海": {"region": "华东大区", "cities": ["上海"]},
-    "江苏": {"region": "华东大区", "cities": ["南京", "苏州", "无锡", "徐州"]},
-    "浙江": {"region": "华东大区", "cities": ["杭州", "宁波", "温州", "金华"]},
-    "广东": {"region": "华南大区", "cities": ["广州", "深圳", "佛山", "东莞"]},
-    "福建": {"region": "华南大区", "cities": ["福州", "厦门", "泉州"]},
-    "河南": {"region": "华中大区", "cities": ["郑州", "洛阳", "南阳", "新乡"]},
-    "湖北": {"region": "华中大区", "cities": ["武汉", "襄阳", "宜昌"]},
-    "山东": {"region": "华北大区", "cities": ["济南", "青岛", "烟台", "临沂"]},
-    "四川": {"region": "西南大区", "cities": ["成都", "绵阳", "德阳", "南充"]},
-    "重庆": {"region": "西南大区", "cities": ["重庆"]},
-    "陕西": {"region": "西北大区", "cities": ["西安", "咸阳", "宝鸡"]},
-}
-DISTRICTS = ["核心商圈", "成熟社区", "校园周边", "写字楼区", "居民城区"]
 STORE_TYPES = ["直营门店", "经销商门店", "会员仓店", "社区前置仓", "电商旗舰店"]
 STORE_STATUS = ["营业中", "筹备中", "暂停营业"]
 CHANNELS = ["线下门店", "天猫", "京东", "抖音", "小程序", "社区团购", "O2O到家"]
@@ -53,8 +39,8 @@ ORDER_STATUS_WEIGHTS = [
 ]
 MEMBER_LEVELS = ["新客", "普通会员", "银卡会员", "金卡会员", "黑金会员"]
 MEMBER_LEVEL_WEIGHTS = [18, 42, 23, 12, 5]
-GENDERS = ["男", "女", "未知"]
-GENDER_WEIGHTS = [45, 47, 8]
+GENDERS = ["男", "女"]
+GENDER_WEIGHTS = [49, 51]
 REGISTER_CHANNELS = ["门店拉新", "电商投放", "社媒种草", "直播转化", "会员转介绍"]
 CUSTOMER_TAGS = ["家庭囤货", "母婴优先", "品质白领", "价格敏感", "高频复购"]
 OCCUPATIONS = ["上班族", "学生", "自由职业", "企业职员", "个体经营", "家庭主理人"]
@@ -137,7 +123,9 @@ def recreate_tables() -> None:
             `birthday` DATE NOT NULL COMMENT '生日',
             `mobile_city` VARCHAR(32) NOT NULL COMMENT '手机号归属城市',
             `province` VARCHAR(32) NOT NULL COMMENT '常住省份',
+            `province_code` VARCHAR(12) NOT NULL COMMENT '常住省份编码',
             `city` VARCHAR(32) NOT NULL COMMENT '常住城市',
+            `city_code` VARCHAR(12) NOT NULL COMMENT '常住城市编码',
             `city_tier` VARCHAR(10) NOT NULL COMMENT '城市等级',
             `register_channel` VARCHAR(32) NOT NULL COMMENT '注册渠道',
             `register_source` VARCHAR(32) NOT NULL COMMENT '注册来源',
@@ -167,7 +155,9 @@ def recreate_tables() -> None:
             `channel_type` VARCHAR(32) NOT NULL COMMENT '渠道类型',
             `country` VARCHAR(32) NOT NULL COMMENT '所在国家',
             `province` VARCHAR(32) NOT NULL COMMENT '所在省份',
+            `province_code` VARCHAR(12) NOT NULL COMMENT '所在省份编码',
             `city` VARCHAR(32) NOT NULL COMMENT '所在城市',
+            `city_code` VARCHAR(12) NOT NULL COMMENT '所在城市编码',
             `district` VARCHAR(32) NOT NULL COMMENT '所在区域',
             `sales_region` VARCHAR(32) NOT NULL COMMENT '销售大区',
             `org_level_1` VARCHAR(32) NOT NULL COMMENT '一级组织',
@@ -187,6 +177,7 @@ def recreate_tables() -> None:
         CREATE TABLE `product_info` (
             `product_id` BIGINT NOT NULL COMMENT '产品ID，主键',
             `sku_code` VARCHAR(32) NOT NULL COMMENT '产品SKU编码',
+            `barcode` VARCHAR(32) NOT NULL COMMENT '商品条码',
             `brand_name` VARCHAR(32) NOT NULL COMMENT '品牌名称',
             `spu_name` VARCHAR(128) NOT NULL COMMENT '产品SPU名称',
             `product_name` VARCHAR(128) NOT NULL COMMENT '产品名称',
@@ -198,6 +189,7 @@ def recreate_tables() -> None:
             `target_group` VARCHAR(32) NOT NULL COMMENT '目标人群',
             `list_price` DECIMAL(12,2) NOT NULL COMMENT '建议零售价',
             `cost_price` DECIMAL(12,2) NOT NULL COMMENT '成本单价',
+            `shelf_life_days` INT NOT NULL COMMENT '保质期天数',
             `launch_date` DATE NOT NULL COMMENT '上市日期',
             `temperature_zone` VARCHAR(20) NOT NULL COMMENT '温层类型',
             `product_status` VARCHAR(20) NOT NULL COMMENT '产品状态',
@@ -228,9 +220,13 @@ def recreate_tables() -> None:
             `freight_amount` DECIMAL(12,2) NOT NULL COMMENT '运费金额',
             `paid_amount` DECIMAL(12,2) NOT NULL COMMENT '订单实付金额',
             `refund_amount` DECIMAL(12,2) NOT NULL COMMENT '订单累计退款金额',
+            `coupon_amount` DECIMAL(12,2) NOT NULL COMMENT '优惠券抵扣金额',
+            `promotion_type` VARCHAR(32) NOT NULL COMMENT '促销类型',
             `receiver_name` VARCHAR(32) NOT NULL COMMENT '收货人姓名',
             `receiver_province` VARCHAR(32) NOT NULL COMMENT '收货省份',
+            `receiver_province_code` VARCHAR(12) NOT NULL COMMENT '收货省份编码',
             `receiver_city` VARCHAR(32) NOT NULL COMMENT '收货城市',
+            `receiver_city_code` VARCHAR(12) NOT NULL COMMENT '收货城市编码',
             `receiver_district` VARCHAR(32) NOT NULL COMMENT '收货区域',
             `created_at` DATETIME NOT NULL COMMENT '下单时间',
             `paid_at` DATETIME NULL COMMENT '支付时间',
@@ -347,8 +343,10 @@ def recreate_tables() -> None:
 def build_stores() -> list[dict]:
     stores: list[dict] = []
     store_id = 1
-    for province, meta in PROVINCE_CITY_REGION.items():
-        for city in meta["cities"]:
+    for province in province_names():
+        province_info = province_meta(province)
+        for city in city_names(province):
+            city_info = city_meta(province, city)
             for store_type in STORE_TYPES:
                 channel_name = "线下门店" if store_type != "电商旗舰店" else random.choice(["天猫", "京东", "抖音", "小程序"])
                 if store_type == "社区前置仓":
@@ -365,11 +363,13 @@ def build_stores() -> list[dict]:
                         "channel_type": channel_type,
                         "country": "中国",
                         "province": province,
+                        "province_code": province_info["province_code"],
                         "city": city,
-                        "district": random.choice(DISTRICTS),
-                        "sales_region": meta["region"],
+                        "city_code": city_info["city_code"],
+                        "district": random.choice(city_info["districts"]),
+                        "sales_region": province_info["region"],
                         "org_level_1": "蒙牛中国销售中心",
-                        "org_level_2": meta["region"],
+                        "org_level_2": province_info["region"],
                         "org_level_3": f"{province}省区",
                         "manager_name": random_name(),
                         "open_date": date(2020, 1, 1) + timedelta(days=random.randint(0, 1800)),
@@ -389,6 +389,7 @@ def build_products() -> list[dict]:
             {
                 "product_id": index,
                 "sku_code": f"SKU{index:05d}",
+                "barcode": f"69{index:011d}",
                 "brand_name": item["brand"],
                 "spu_name": item["spu"],
                 "product_name": item["name"],
@@ -400,6 +401,7 @@ def build_products() -> list[dict]:
                 "target_group": item["target"],
                 "list_price": list_price,
                 "cost_price": cost_price,
+                "shelf_life_days": 180 if item["cat1"] in {"液态奶", "含乳饮料"} else (25 if item["cat1"] in {"低温酸奶", "低温饮品", "鲜奶"} else 365),
                 "launch_date": date(2021, 1, 1) + timedelta(days=random.randint(0, 1400)),
                 "temperature_zone": "冷链" if "冷" in item["package"] or item["cat1"] in {"鲜奶", "冰淇淋"} else "常温",
                 "product_status": "在售",
@@ -412,12 +414,12 @@ def build_users(user_count: int) -> list[dict]:
     users: list[dict] = []
     register_start = datetime.now() - timedelta(days=900)
     register_end = datetime.now() - timedelta(days=3)
-    provinces = list(PROVINCE_CITY_REGION.keys())
-    city_tiers = ["T1", "T2", "T3"]
     sources = ["公众号", "直播间", "电商广告", "门店活动", "社群裂变"]
     for user_id in range(1, user_count + 1):
-        province = random.choice(provinces)
-        city = random.choice(PROVINCE_CITY_REGION[province]["cities"])
+        province = random.choice(province_names())
+        province_info = province_meta(province)
+        city = random.choice(city_names(province))
+        city_info = city_meta(province, city)
         age = random.randint(18, 58)
         birthday = date.today() - timedelta(days=age * 365 + random.randint(0, 364))
         register_at = random_datetime(register_start, register_end)
@@ -432,8 +434,10 @@ def build_users(user_count: int) -> list[dict]:
                 "birthday": birthday,
                 "mobile_city": city,
                 "province": province,
+                "province_code": province_info["province_code"],
                 "city": city,
-                "city_tier": random.choices(city_tiers, weights=[30, 45, 25], k=1)[0],
+                "city_code": city_info["city_code"],
+                "city_tier": city_info["city_tier"],
                 "register_channel": random.choice(REGISTER_CHANNELS),
                 "register_source": random.choice(sources),
                 "register_at": register_at,
@@ -471,13 +475,13 @@ def build_fact_batches(order_count: int, batch_size: int, users: list[dict], sto
     INSERT INTO `order_master` (
         `order_id`, `order_no`, `buyer_id`, `store_id`, `platform`, `sales_channel`, `channel_type`, `order_source`,
         `order_status`, `payment_status`, `fulfillment_status`, `payment_method`, `currency_code`, `item_count`,
-        `gross_amount`, `discount_amount`, `freight_amount`, `paid_amount`, `refund_amount`, `receiver_name`,
-        `receiver_province`, `receiver_city`, `receiver_district`, `created_at`, `paid_at`, `shipped_at`, `delivered_at`, `completed_at`, `updated_at`
+        `gross_amount`, `discount_amount`, `freight_amount`, `paid_amount`, `refund_amount`, `coupon_amount`, `promotion_type`, `receiver_name`,
+        `receiver_province`, `receiver_province_code`, `receiver_city`, `receiver_city_code`, `receiver_district`, `created_at`, `paid_at`, `shipped_at`, `delivered_at`, `completed_at`, `updated_at`
     ) VALUES (
         %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s,
-        %s, %s, %s, %s, %s, %s,
-        %s, %s, %s, %s, %s, %s, %s, %s, %s
+        %s, %s, %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
     )
     """
     order_detail_sql = """
@@ -587,10 +591,18 @@ def build_fact_batches(order_count: int, batch_size: int, users: list[dict], sto
                 freight_amount = quantize(0 if sales_channel == "线下门店" else random.choice([0, 4, 6, 8, 10]))
                 paid_amount = quantize(gross_amount - discount_amount + freight_amount)
                 refund_amount = Decimal("0.00")
+                coupon_amount = quantize(discount_amount * Decimal("0.65"))
+                promotion_type = random.choices(
+                    ["满减", "会员价", "直播补贴", "单品直降", "组合购"],
+                    weights=[28, 22, 15, 23, 12],
+                    k=1,
+                )[0]
                 receiver_name = user["user_name"]
                 receiver_province = user["province"]
+                receiver_province_code = user["province_code"]
                 receiver_city = user["city"]
-                receiver_district = random.choice(DISTRICTS)
+                receiver_city_code = user["city_code"]
+                receiver_district = random.choice(city_meta(receiver_province, receiver_city)["districts"])
 
                 if status in {"待支付", "已取消"}:
                     paid_amount = Decimal("0.00") if status == "待支付" else paid_amount
@@ -679,9 +691,13 @@ def build_fact_batches(order_count: int, batch_size: int, users: list[dict], sto
                         freight_amount,
                         paid_amount,
                         refund_amount,
+                        coupon_amount,
+                        promotion_type,
                         receiver_name,
                         receiver_province,
+                        receiver_province_code,
                         receiver_city,
+                        receiver_city_code,
                         receiver_district,
                         created_at,
                         paid_at,
@@ -757,7 +773,7 @@ def seed_dimensions(user_count: int) -> dict[str, int]:
     user_rows = [
         (
             user["user_id"], user["user_code"], user["user_name"], user["gender"], user["age"], user["birthday"],
-            user["mobile_city"], user["province"], user["city"], user["city_tier"], user["register_channel"],
+            user["mobile_city"], user["province"], user["province_code"], user["city"], user["city_code"], user["city_tier"], user["register_channel"],
             user["register_source"], user["register_at"], user["member_level"], user["loyalty_points"], user["preferred_channel"],
             user["device_type"], user["occupation"], user["customer_tag"], user["is_mother"]
         )
@@ -766,16 +782,16 @@ def seed_dimensions(user_count: int) -> dict[str, int]:
     store_rows = [
         (
             store["store_id"], store["store_code"], store["store_name"], store["store_type"], store["channel_name"],
-            store["channel_type"], store["country"], store["province"], store["city"], store["district"], store["sales_region"],
+            store["channel_type"], store["country"], store["province"], store["province_code"], store["city"], store["city_code"], store["district"], store["sales_region"],
             store["org_level_1"], store["org_level_2"], store["org_level_3"], store["manager_name"], store["open_date"], store["store_status"]
         )
         for store in stores
     ]
     product_rows = [
         (
-            product["product_id"], product["sku_code"], product["brand_name"], product["spu_name"], product["product_name"],
+            product["product_id"], product["sku_code"], product["barcode"], product["brand_name"], product["spu_name"], product["product_name"],
             product["category_l1"], product["category_l2"], product["capacity_desc"], product["package_type"], product["channel_type"],
-            product["target_group"], product["list_price"], product["cost_price"], product["launch_date"], product["temperature_zone"], product["product_status"]
+            product["target_group"], product["list_price"], product["cost_price"], product["shelf_life_days"], product["launch_date"], product["temperature_zone"], product["product_status"]
         )
         for product in products
     ]
@@ -785,28 +801,28 @@ def seed_dimensions(user_count: int) -> dict[str, int]:
             cursor.executemany(
                 """
                 INSERT INTO `user_info` (
-                    `user_id`, `user_code`, `user_name`, `gender`, `age`, `birthday`, `mobile_city`, `province`, `city`,
+                    `user_id`, `user_code`, `user_name`, `gender`, `age`, `birthday`, `mobile_city`, `province`, `province_code`, `city`, `city_code`,
                     `city_tier`, `register_channel`, `register_source`, `register_at`, `member_level`, `loyalty_points`,
                     `preferred_channel`, `device_type`, `occupation`, `customer_tag`, `is_mother`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 user_rows,
             )
             cursor.executemany(
                 """
                 INSERT INTO `store_info` (
-                    `store_id`, `store_code`, `store_name`, `store_type`, `channel_name`, `channel_type`, `country`, `province`, `city`,
+                    `store_id`, `store_code`, `store_name`, `store_type`, `channel_name`, `channel_type`, `country`, `province`, `province_code`, `city`, `city_code`,
                     `district`, `sales_region`, `org_level_1`, `org_level_2`, `org_level_3`, `manager_name`, `open_date`, `store_status`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 store_rows,
             )
             cursor.executemany(
                 """
                 INSERT INTO `product_info` (
-                    `product_id`, `sku_code`, `brand_name`, `spu_name`, `product_name`, `category_l1`, `category_l2`, `capacity_desc`,
-                    `package_type`, `channel_type`, `target_group`, `list_price`, `cost_price`, `launch_date`, `temperature_zone`, `product_status`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    `product_id`, `sku_code`, `barcode`, `brand_name`, `spu_name`, `product_name`, `category_l1`, `category_l2`, `capacity_desc`,
+                    `package_type`, `channel_type`, `target_group`, `list_price`, `cost_price`, `shelf_life_days`, `launch_date`, `temperature_zone`, `product_status`
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 product_rows,
             )
@@ -839,6 +855,9 @@ def main() -> None:
         stores=dimension_result.pop("store_objects"),
         products=dimension_result.pop("product_objects"),
     )
+    with pymysql.connect(**db_config()) as conn:
+        ensure_data_quality_runtime(conn)
+        data_quality_result = run_data_quality_audit(conn, run_type="init_seed", auto_fix=True)
     ensure_semantic_runtime(refresh_embeddings=False)
     database = os.getenv("MYSQL_DATABASE", "chatbi")
     print(
@@ -849,7 +868,9 @@ def main() -> None:
         f"{database}.order_master={fact_result['orders']}, "
         f"{database}.order_detail={fact_result['details']}, "
         f"{database}.refund_master={fact_result['refunds']}, "
-        f"{database}.refund_detail={fact_result['refund_details']}"
+        f"{database}.refund_detail={fact_result['refund_details']}, "
+        f"data_quality_fixed={data_quality_result['fixed_count']}, "
+        f"data_quality_issues={data_quality_result['issue_count']}"
     )
 
 

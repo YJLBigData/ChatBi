@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from chatbi.config import TASK_TYPE_SEMANTIC_REBUILD
 from chatbi.repository.task_repository import get_latest_task_by_type, get_query_plan_quality_stats
+from chatbi.service.data_quality_service import get_latest_data_quality_summary
 from chatbi.utils.question_utils import is_context_dependent_question
 
 
@@ -44,13 +45,13 @@ COLUMN_REF_PATTERN = re.compile(r"([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)")
 
 
 PROMPT_FIELD_HINTS: dict[str, list[str]] = {
-    "order_master": ["order_id", "buyer_id", "store_id", "created_at", "order_status", "paid_amount", "gross_amount", "discount_amount", "item_count", "sales_channel", "channel_type", "platform", "payment_method", "receiver_province", "receiver_city"],
+    "order_master": ["order_id", "buyer_id", "store_id", "created_at", "order_status", "paid_amount", "gross_amount", "discount_amount", "coupon_amount", "promotion_type", "item_count", "sales_channel", "channel_type", "platform", "payment_method", "receiver_province", "receiver_city", "receiver_district"],
     "order_detail": ["order_detail_id", "order_id", "brand_name", "product_id", "product_name", "category_l1", "category_l2", "line_paid_amount", "line_gross_amount", "line_discount_amount", "quantity", "sales_channel"],
     "refund_master": ["refund_id", "order_id", "buyer_id", "store_id", "refund_amount", "refund_item_count", "refund_status", "refund_type", "refund_reason", "applied_at"],
     "refund_detail": ["refund_detail_id", "refund_id", "order_detail_id", "product_id", "refund_amount", "refund_reason", "refund_quantity"],
-    "user_info": ["user_id", "member_level", "gender", "age", "province", "city", "city_tier", "register_channel", "preferred_channel", "customer_tag", "device_type"],
-    "store_info": ["store_id", "store_name", "store_type", "sales_region", "channel_name", "channel_type", "province", "city", "org_level_1"],
-    "product_info": ["product_id", "brand_name", "product_name", "category_l1", "category_l2", "channel_type", "target_group", "temperature_zone", "list_price", "cost_price"],
+    "user_info": ["user_id", "member_level", "gender", "age", "province", "province_code", "city", "city_code", "city_tier", "register_channel", "preferred_channel", "customer_tag", "device_type"],
+    "store_info": ["store_id", "store_name", "store_type", "sales_region", "channel_name", "channel_type", "province", "province_code", "city", "city_code", "district", "org_level_1"],
+    "product_info": ["product_id", "sku_code", "barcode", "brand_name", "product_name", "category_l1", "category_l2", "channel_type", "target_group", "temperature_zone", "list_price", "cost_price", "shelf_life_days"],
 }
 
 DIMENSION_VALUE_SOURCES: dict[str, list[tuple[str, str]]] = {
@@ -60,15 +61,18 @@ DIMENSION_VALUE_SOURCES: dict[str, list[tuple[str, str]]] = {
     "sales_region": [("store_info", "sales_region")],
     "store_province": [("store_info", "province")],
     "store_city": [("store_info", "city")],
+    "store_district": [("store_info", "district")],
     "store_name": [("store_info", "store_name")],
     "store_type": [("store_info", "store_type")],
     "receiver_province": [("order_master", "receiver_province")],
     "receiver_city": [("order_master", "receiver_city")],
+    "receiver_district": [("order_master", "receiver_district")],
     "brand_name": [("order_detail", "brand_name"), ("product_info", "brand_name")],
     "product_name": [("order_detail", "product_name"), ("product_info", "product_name")],
     "category_l1": [("order_detail", "category_l1"), ("product_info", "category_l1")],
     "category_l2": [("order_detail", "category_l2"), ("product_info", "category_l2")],
     "payment_method": [("order_master", "payment_method")],
+    "promotion_type": [("order_master", "promotion_type")],
     "member_level": [("user_info", "member_level")],
     "gender": [("user_info", "gender")],
     "city_tier": [("user_info", "city_tier")],
@@ -560,12 +564,15 @@ DEFAULT_DIMENSIONS = [
     {"dimension_code": "sales_region", "dimension_name": "销售大区", "domain_key": "store", "description": "门店所在销售大区，例如华东大区、华南大区。", "source_expression": "store_info.sales_region", "related_tables": ["store_info", "order_master"], "keywords": ["销售大区", "大区", "华东", "华南", "华北", "华中", "西南", "西北"], "priority_score": 95, "is_active": 1},
     {"dimension_code": "store_province", "dimension_name": "省份", "domain_key": "store", "description": "门店或经营区域所在省份。若问题同时出现大区与省份，优先使用该维度。", "source_expression": "store_info.province", "related_tables": ["store_info", "order_master"], "keywords": ["省份", "所在省份", "门店省份", "省区"], "priority_score": 93, "is_active": 1},
     {"dimension_code": "store_city", "dimension_name": "城市", "domain_key": "store", "description": "门店或经营区域所在城市。", "source_expression": "store_info.city", "related_tables": ["store_info", "order_master"], "keywords": ["城市", "所在城市", "门店城市"], "priority_score": 84, "is_active": 1},
+    {"dimension_code": "store_district", "dimension_name": "门店区县", "domain_key": "store", "description": "门店所在区县或经营片区。", "source_expression": "store_info.district", "related_tables": ["store_info", "order_master"], "keywords": ["门店区县", "区县", "片区"], "priority_score": 78, "is_active": 1},
     {"dimension_code": "store_name", "dimension_name": "门店名称", "domain_key": "store", "description": "门店或店铺名称。", "source_expression": "store_info.store_name", "related_tables": ["store_info", "order_master"], "keywords": ["门店", "店铺", "门店名称"], "priority_score": 88, "is_active": 1},
     {"dimension_code": "store_type", "dimension_name": "门店类型", "domain_key": "store", "description": "门店经营类型，例如直营门店、经销门店、社区前置仓。", "source_expression": "store_info.store_type", "related_tables": ["store_info", "order_master"], "keywords": ["门店类型", "店型", "直营门店", "经销门店"], "priority_score": 83, "is_active": 1},
     {"dimension_code": "org_level_1", "dimension_name": "一级组织", "domain_key": "store", "description": "门店所属一级组织，用于区域组织经营分析。", "source_expression": "store_info.org_level_1", "related_tables": ["store_info", "order_master"], "keywords": ["一级组织", "组织", "销售中心"], "priority_score": 79, "is_active": 1},
     {"dimension_code": "receiver_province", "dimension_name": "收货省份", "domain_key": "transaction", "description": "订单收货地址中的省份。", "source_expression": "order_master.receiver_province", "related_tables": ["order_master"], "keywords": ["省份", "收货省份", "地区", "河南", "江苏", "浙江", "广东"], "priority_score": 90, "is_active": 1},
     {"dimension_code": "receiver_city", "dimension_name": "收货城市", "domain_key": "transaction", "description": "订单收货地址中的城市。", "source_expression": "order_master.receiver_city", "related_tables": ["order_master"], "keywords": ["城市", "收货城市"], "priority_score": 82, "is_active": 1},
+    {"dimension_code": "receiver_district", "dimension_name": "收货区县", "domain_key": "transaction", "description": "订单收货地址中的区县。", "source_expression": "order_master.receiver_district", "related_tables": ["order_master"], "keywords": ["收货区县", "收货区域"], "priority_score": 75, "is_active": 1},
     {"dimension_code": "order_status", "dimension_name": "订单状态", "domain_key": "transaction", "description": "订单当前状态，仅可用中文状态值。", "source_expression": "order_master.order_status", "related_tables": ["order_master"], "keywords": ["订单状态", "已支付", "已完成", "已退款", "部分退款"], "priority_score": 84, "is_active": 1},
+    {"dimension_code": "promotion_type", "dimension_name": "促销类型", "domain_key": "transaction", "description": "订单成交时生效的主要促销类型，例如满减、会员价、直播补贴。", "source_expression": "order_master.promotion_type", "related_tables": ["order_master"], "keywords": ["促销类型", "活动类型", "满减", "会员价", "直播补贴"], "priority_score": 80, "is_active": 1},
     {"dimension_code": "order_date", "dimension_name": "下单日期", "domain_key": "transaction", "description": "订单创建日期。", "source_expression": "DATE(order_master.created_at)", "related_tables": ["order_master"], "keywords": ["下单日期", "按天", "按日", "时间", "日期"], "priority_score": 87, "is_active": 1},
     {"dimension_code": "order_week", "dimension_name": "下单周", "domain_key": "transaction", "description": "订单创建所属周。", "source_expression": "YEARWEEK(order_master.created_at, 1)", "related_tables": ["order_master"], "keywords": ["按周", "周"], "priority_score": 76, "is_active": 1},
     {"dimension_code": "order_month", "dimension_name": "下单月", "domain_key": "transaction", "description": "订单创建所属月份。", "source_expression": "DATE_FORMAT(order_master.created_at, '%Y-%m')", "related_tables": ["order_master"], "keywords": ["按月", "月"], "priority_score": 78, "is_active": 1},
@@ -622,11 +629,14 @@ DEFAULT_SYNONYMS = [
     {"target_type": "dimension", "target_key": "receiver_province", "standard_name": "收货省份", "synonym_term": "地区", "related_tables": ["order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "store_province", "standard_name": "省份", "synonym_term": "所在省份", "related_tables": ["store_info", "order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "store_province", "standard_name": "省份", "synonym_term": "门店省份", "related_tables": ["store_info", "order_master"], "weight_score": 9, "is_active": 1},
+    {"target_type": "dimension", "target_key": "store_district", "standard_name": "门店区县", "synonym_term": "区县", "related_tables": ["store_info", "order_master"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "receiver_district", "standard_name": "收货区县", "synonym_term": "收货区县", "related_tables": ["order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "store_name", "standard_name": "门店名称", "synonym_term": "店铺", "related_tables": ["store_info", "order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "brand_name", "standard_name": "品牌", "synonym_term": "牌子", "related_tables": ["order_detail", "product_info", "order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "platform", "standard_name": "平台", "synonym_term": "来源平台", "related_tables": ["order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_channel", "standard_name": "销售渠道", "synonym_term": "渠道", "related_tables": ["order_master", "order_detail"], "weight_score": 12, "is_active": 1},
     {"target_type": "dimension", "target_key": "payment_method", "standard_name": "支付方式", "synonym_term": "付款方式", "related_tables": ["order_master"], "weight_score": 9, "is_active": 1},
+    {"target_type": "dimension", "target_key": "promotion_type", "standard_name": "促销类型", "synonym_term": "活动类型", "related_tables": ["order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "city_tier", "standard_name": "城市等级", "synonym_term": "城市层级", "related_tables": ["user_info", "order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "org_level_1", "standard_name": "一级组织", "synonym_term": "组织", "related_tables": ["store_info", "order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "register_channel", "standard_name": "注册渠道", "synonym_term": "拉新渠道", "related_tables": ["user_info", "order_master"], "weight_score": 8, "is_active": 1},
@@ -2500,6 +2510,7 @@ def get_admin_bootstrap() -> dict[str, Any]:
                 """
             )
             pending_embeddings = cursor.fetchone()["cnt"]
+        data_quality = get_latest_data_quality_summary(conn)
     latest_rebuild_task = get_latest_task_by_type(TASK_TYPE_SEMANTIC_REBUILD) or {}
     latest_rebuild_result = latest_rebuild_task.get('result') if latest_rebuild_task else {}
     latest_rebuild = {
@@ -2523,6 +2534,7 @@ def get_admin_bootstrap() -> dict[str, Any]:
         "overview": {"counts": counts, "pending_embeddings": pending_embeddings},
         "latest_rebuild": latest_rebuild,
         "query_plan_quality": get_query_plan_quality_stats(limit=200),
+        "data_quality": data_quality,
     }
     for entity in ADMIN_ENTITY_CONFIG:
         payload[entity] = list_admin_entity(entity)
@@ -2646,6 +2658,7 @@ def get_semantic_maintenance_guide() -> dict[str, list[str]]:
         "steps": [
             "先在后台维护页修改业务域、业务表、指标、维度、关联关系、同义词或问法示例。",
             "如果业务表结构有变化，先点击“同步业务表结构”，把真实表字段备注同步到 semantic_column。",
+            "系统启动和初始化造数时会自动执行一轮原始数据质量巡检，补齐省市编码、替换通用占位区县并修正常见脏值。",
             "修改完成后点击“一键刷新重建”，系统会同步重建检索索引并刷新有效文档的向量。",
             "维护指标时，related_tables 要填真实参与计算的表，default_expression 填标准口径表达式，description 填业务口径说明。",
             "维护维度时，source_expression 填默认分组字段或表达式，keywords 填常见自然语言别名。",
@@ -2661,5 +2674,6 @@ def get_semantic_maintenance_guide() -> dict[str, list[str]]:
             "semantic_synonym：自然语言同义词映射。",
             "semantic_example：高质量问法示例。",
             "semantic_search_doc：全文索引和向量索引的物化文档。",
+            "data_quality_run / data_quality_issue：原始数据质量巡检结果和问题明细。",
         ],
     }

@@ -11,6 +11,7 @@
 
 核心能力：
 - 自动建表并生成 10 万级以上模拟数据
+- 启动和初始化造数时自动执行原始数据质量巡检，补齐省市编码、替换通用占位区县并修正常见脏值
 - 支持连续对话、澄清追问和日期范围再次提问
 - 会话持久化到 MySQL，服务重启后仍可继续追问
 - 上下文采用 `滚动摘要 + 最近窗口` 压缩策略，并在页面右下角展示压缩量与剩余额度
@@ -87,6 +88,12 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 - `refund_master`
 - `refund_detail`
 
+当前业务表额外补充了更贴近企业电商的数据字段：
+- `user_info`：`province_code`、`city_code`
+- `store_info`：`province_code`、`city_code`
+- `order_master`：`coupon_amount`、`promotion_type`、`receiver_province_code`、`receiver_city_code`
+- `product_info`：`barcode`、`shelf_life_days`
+
 会话持久化表会在应用启动时自动创建：
 - `chat_session`
 - `chat_message`
@@ -103,6 +110,10 @@ python init_db.py --rows 120000 --user-rows 40000 --batch-size 2000
 - `semantic_synonym`
 - `semantic_example`
 - `semantic_search_doc`
+
+原始数据质量巡检表会自动创建：
+- `data_quality_run`
+- `data_quality_issue`
 
 报告模板表也会自动创建并初始化：
 - `report_template`
@@ -254,6 +265,7 @@ launchctl unload ~/Library/LaunchAgents/com.chatbi.worker.plist
 - 业务表结构变化后，先点击“同步业务表结构”
 - 修改完语义对象后，点击“一键刷新重建”，系统会同步重建检索索引并刷新有效文档的向量
 - `semantic_column` 和 `semantic_search_doc` 主要是系统生成结果，通常只读
+- 页面顶部会展示最近一次原始数据质量巡检结果，可直接确认是否还存在通用占位区县、未知性别、缺失行政编码等问题
 
 ## 安全说明
 
