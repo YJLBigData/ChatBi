@@ -44,6 +44,16 @@ LOCATION_SUFFIXES = [
 
 QUESTION_PREFIXES = ('统计', '查询', '分析', '查看', '帮我', '请帮我', '请', '麻烦')
 QUESTION_SUFFIXES = ('。', '.', '？', '?', '！', '!')
+MYSQL_INTERVAL_DATE_PATTERN = re.compile(
+    r"DATE\(\s*'(?P<date>\d{4}-\d{2}-\d{2})'\s*(?P<op>[+-])\s*INTERVAL\s+(?P<count>\d+)\s+(?P<unit>DAY|WEEK|MONTH|YEAR)\s*\)",
+    re.IGNORECASE,
+)
+AS_DOUBLE_QUOTED_ALIAS_PATTERN = re.compile(r'\bAS\s+"(?P<alias>[^"\n]+)"', re.IGNORECASE)
+QUALIFIED_DOUBLE_QUOTED_IDENTIFIER_PATTERN = re.compile(r'(?P<prefix>\b[a-zA-Z_][\w]*\.)"(?P<identifier>[^"\n]+)"')
+ORDER_GROUP_DOUBLE_QUOTED_PATTERN = re.compile(
+    r'(?P<clause>\b(?:ORDER\s+BY|GROUP\s+BY|PARTITION\s+BY)\s+)"(?P<identifier>[^"\n]+)"',
+    re.IGNORECASE,
+)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -147,8 +157,40 @@ def normalize_sql_filter_values(sql: str) -> str:
     return normalized_sql
 
 
+def normalize_mysql_date_interval_expressions(sql: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        fn = 'DATE_SUB' if match.group('op') == '-' else 'DATE_ADD'
+        return f"{fn}('{match.group('date')}', INTERVAL {match.group('count')} {match.group('unit').upper()})"
+
+    normalized_sql = MYSQL_INTERVAL_DATE_PATTERN.sub(replace, sql)
+    if normalized_sql != sql:
+        logger.info('sql interval syntax normalized original=%s normalized=%s', sql[:800], normalized_sql[:800])
+    return normalized_sql
+
+
+def normalize_mysql_identifier_quotes(sql: str) -> str:
+    normalized_sql = AS_DOUBLE_QUOTED_ALIAS_PATTERN.sub(lambda match: f"AS `{match.group('alias')}`", sql)
+    normalized_sql = QUALIFIED_DOUBLE_QUOTED_IDENTIFIER_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}`{match.group('identifier')}`",
+        normalized_sql,
+    )
+    normalized_sql = ORDER_GROUP_DOUBLE_QUOTED_PATTERN.sub(
+        lambda match: f"{match.group('clause')}`{match.group('identifier')}`",
+        normalized_sql,
+    )
+    if normalized_sql != sql:
+        logger.info('sql identifier quotes normalized original=%s normalized=%s', sql[:800], normalized_sql[:800])
+    return normalized_sql
+
+
+def normalize_sql_mysql_dialect(sql: str) -> str:
+    normalized_sql = normalize_mysql_identifier_quotes(str(sql or '').strip())
+    normalized_sql = normalize_mysql_date_interval_expressions(normalized_sql)
+    return normalized_sql
+
+
 def validate_and_normalize_sql(sql: str) -> str:
-    normalized = str(sql or '').strip()
+    normalized = normalize_sql_mysql_dialect(sql)
     if not normalized:
         raise ValueError('模型未生成 SQL')
     normalized = re.sub(r';+\s*$', '', normalized).strip()
@@ -546,6 +588,7 @@ def handle_user_query(
         'metric_description': llm_result['metric_description'],
         'dimensions': llm_result['dimensions'],
         'metrics': llm_result['metrics'],
+        'sql': sql,
         'generated_sql': sql,
         'chart_title': llm_result['chart_title'],
         'chart_label_field': llm_result['chart_label_field'],

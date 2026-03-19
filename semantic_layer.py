@@ -6,6 +6,7 @@ import math
 import os
 import re
 from collections import defaultdict, deque
+from functools import lru_cache
 from typing import Any
 
 import pymysql
@@ -43,14 +44,40 @@ COLUMN_REF_PATTERN = re.compile(r"([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)")
 
 
 PROMPT_FIELD_HINTS: dict[str, list[str]] = {
-    "order_master": ["order_id", "created_at", "order_status", "paid_amount", "sales_channel", "receiver_province", "buyer_id", "store_id"],
-    "order_detail": ["order_detail_id", "order_id", "brand_name", "product_id", "line_paid_amount", "line_gross_amount", "quantity", "sales_channel"],
-    "refund_master": ["refund_id", "order_id", "buyer_id", "store_id", "refund_amount", "refund_status", "refund_reason", "applied_at"],
+    "order_master": ["order_id", "buyer_id", "store_id", "created_at", "order_status", "paid_amount", "gross_amount", "discount_amount", "item_count", "sales_channel", "channel_type", "platform", "payment_method", "receiver_province", "receiver_city"],
+    "order_detail": ["order_detail_id", "order_id", "brand_name", "product_id", "product_name", "category_l1", "category_l2", "line_paid_amount", "line_gross_amount", "line_discount_amount", "quantity", "sales_channel"],
+    "refund_master": ["refund_id", "order_id", "buyer_id", "store_id", "refund_amount", "refund_item_count", "refund_status", "refund_type", "refund_reason", "applied_at"],
     "refund_detail": ["refund_detail_id", "refund_id", "order_detail_id", "product_id", "refund_amount", "refund_reason", "refund_quantity"],
-    "user_info": ["user_id", "member_level", "gender", "age", "province", "city"],
-    "store_info": ["store_id", "store_name", "sales_region", "channel_name", "channel_type", "province", "city"],
-    "product_info": ["product_id", "brand_name", "product_name", "category_l1", "category_l2", "channel_type"],
+    "user_info": ["user_id", "member_level", "gender", "age", "province", "city", "city_tier", "register_channel", "preferred_channel", "customer_tag", "device_type"],
+    "store_info": ["store_id", "store_name", "store_type", "sales_region", "channel_name", "channel_type", "province", "city", "org_level_1"],
+    "product_info": ["product_id", "brand_name", "product_name", "category_l1", "category_l2", "channel_type", "target_group", "temperature_zone", "list_price", "cost_price"],
 }
+
+DIMENSION_VALUE_SOURCES: dict[str, list[tuple[str, str]]] = {
+    "sales_channel": [("order_master", "sales_channel"), ("order_detail", "sales_channel")],
+    "channel_type": [("order_master", "channel_type"), ("store_info", "channel_type"), ("product_info", "channel_type")],
+    "platform": [("order_master", "platform")],
+    "sales_region": [("store_info", "sales_region")],
+    "store_name": [("store_info", "store_name")],
+    "store_type": [("store_info", "store_type")],
+    "receiver_province": [("order_master", "receiver_province")],
+    "receiver_city": [("order_master", "receiver_city")],
+    "brand_name": [("order_detail", "brand_name"), ("product_info", "brand_name")],
+    "product_name": [("order_detail", "product_name"), ("product_info", "product_name")],
+    "category_l1": [("order_detail", "category_l1"), ("product_info", "category_l1")],
+    "category_l2": [("order_detail", "category_l2"), ("product_info", "category_l2")],
+    "payment_method": [("order_master", "payment_method")],
+    "member_level": [("user_info", "member_level")],
+    "gender": [("user_info", "gender")],
+    "city_tier": [("user_info", "city_tier")],
+    "register_channel": [("user_info", "register_channel")],
+    "target_group": [("product_info", "target_group")],
+    "temperature_zone": [("product_info", "temperature_zone")],
+    "org_level_1": [("store_info", "org_level_1")],
+    "refund_reason": [("refund_master", "refund_reason"), ("refund_detail", "refund_reason")],
+    "refund_type": [("refund_master", "refund_type")],
+}
+MAX_MATCHED_DIMENSION_VALUES = 3
 
 
 DDL_STATEMENTS = [
@@ -245,9 +272,9 @@ DEFAULT_TABLES = [
         "business_name": "订单主表",
         "table_role": "事实表",
         "description": "记录订单主单级别的销售、支付、履约和收货信息，是订单金额、订单数、销售地区分析的主事实表。",
-        "keywords": ["订单", "销售", "销售额", "销售金额", "GMV", "实付", "支付", "下单", "履约", "收货", "订单数", "客单价", "排名", "top", "前100", "地区销售"],
-        "business_dimensions": ["销售渠道", "渠道类型", "订单状态", "支付方式", "收货省份", "收货城市", "下单日期", "完成日期"],
-        "business_metrics": ["销售金额", "订单数", "退款金额", "客单价", "件单价"],
+        "keywords": ["订单", "销售", "销售额", "销售金额", "GMV", "实付", "支付", "下单", "履约", "收货", "订单数", "客单价", "支付买家数", "优惠金额", "优惠率", "单均件数", "平台", "渠道", "支付方式", "排名", "top", "前100", "地区销售"],
+        "business_dimensions": ["销售渠道", "渠道类型", "平台", "订单状态", "支付方式", "收货省份", "收货城市", "下单日期", "完成日期"],
+        "business_metrics": ["销售金额", "订单数", "退款金额", "客单价", "支付买家数", "优惠金额", "优惠率", "单均件数"],
         "priority_score": 95,
         "is_active": 1,
     },
@@ -257,9 +284,9 @@ DEFAULT_TABLES = [
         "business_name": "订单明细子表",
         "table_role": "事实表",
         "description": "记录订单行级商品明细，是商品销量、品牌销售、品类分析和SKU分析的核心事实表。",
-        "keywords": ["商品", "产品", "sku", "明细", "品牌", "品类", "销量", "销售件数", "商品金额", "单品", "产品排名", "产品销售"],
-        "business_dimensions": ["产品名称", "品牌", "一级品类", "二级品类", "销售渠道"],
-        "business_metrics": ["销量", "商品金额", "销售金额", "件数"],
+        "keywords": ["商品", "产品", "sku", "明细", "品牌", "品类", "销量", "销售件数", "商品金额", "平均成交单价", "单品", "产品排名", "产品销售", "优惠金额", "优惠率", "温层", "目标人群"],
+        "business_dimensions": ["产品名称", "品牌", "一级品类", "二级品类", "销售渠道", "目标人群", "温层"],
+        "business_metrics": ["销量", "商品金额", "销售金额", "件数", "平均成交单价", "优惠金额", "优惠率"],
         "priority_score": 92,
         "is_active": 1,
     },
@@ -269,9 +296,9 @@ DEFAULT_TABLES = [
         "business_name": "用户信息维度表",
         "table_role": "维度表",
         "description": "提供用户属性和会员分层，用于性别、年龄、城市、注册渠道、会员等级等用户维度分析。",
-        "keywords": ["用户", "会员", "人群", "性别", "年龄", "注册", "注册渠道", "标签", "城市等级", "母婴", "职业", "积分"],
-        "business_dimensions": ["性别", "年龄", "常住省份", "常住城市", "会员等级", "注册渠道", "用户标签", "是否母婴人群"],
-        "business_metrics": ["用户数", "会员销售金额", "新客销售金额"],
+        "keywords": ["用户", "会员", "人群", "性别", "年龄", "注册", "注册渠道", "标签", "城市等级", "母婴", "职业", "积分", "支付买家", "复购用户", "设备类型", "偏好渠道"],
+        "business_dimensions": ["性别", "年龄", "常住省份", "常住城市", "城市等级", "会员等级", "注册渠道", "用户标签", "是否母婴人群", "设备类型"],
+        "business_metrics": ["用户数", "支付买家数", "会员销售金额", "新客销售金额"],
         "priority_score": 88,
         "is_active": 1,
     },
@@ -293,9 +320,9 @@ DEFAULT_TABLES = [
         "business_name": "门店信息维度表",
         "table_role": "维度表",
         "description": "提供门店、渠道、销售大区和组织架构信息，用于门店和区域经营分析。",
-        "keywords": ["门店", "店铺", "大区", "销售大区", "组织", "区域", "华东", "华南", "华北", "华中", "西南", "西北", "省份", "城市", "河南", "江苏", "浙江", "广东", "湖北", "山东", "四川", "陕西", "北京", "上海", "渠道", "抖音", "京东", "天猫", "小程序", "线下", "社区团购", "O2O"],
+        "keywords": ["门店", "店铺", "大区", "销售大区", "组织", "区域", "华东", "华南", "华北", "华中", "西南", "西北", "省份", "城市", "河南", "江苏", "浙江", "广东", "湖北", "山东", "四川", "陕西", "北京", "上海", "渠道", "渠道类型", "抖音", "京东", "天猫", "小程序", "线下", "社区团购", "O2O"],
         "business_dimensions": ["门店名称", "门店类型", "渠道名称", "渠道类型", "销售大区", "省份", "城市", "一级组织", "二级组织"],
-        "business_metrics": ["门店销售金额", "门店订单数", "大区销售金额"],
+        "business_metrics": ["门店销售金额", "门店订单数", "大区销售金额", "退款金额"],
         "priority_score": 91,
         "is_active": 1,
     },
@@ -305,9 +332,9 @@ DEFAULT_TABLES = [
         "business_name": "退款主表",
         "table_role": "事实表",
         "description": "记录退款申请、退款金额、退款状态和退款原因，用于售后和退款口径分析。",
-        "keywords": ["退款", "退货", "售后", "退款金额", "退款单", "退款率", "售后金额", "售后单数", "退款原因"],
+        "keywords": ["退款", "退货", "售后", "退款金额", "退款单", "退款率", "售后金额", "售后单数", "退款原因", "退款件数", "退款类型"],
         "business_dimensions": ["退款状态", "退款类型", "退款原因", "退款申请日期"],
-        "business_metrics": ["退款金额", "退款单数", "退款件数"],
+        "business_metrics": ["退款金额", "退款单数", "退款件数", "退款率"],
         "priority_score": 89,
         "is_active": 1,
     },
@@ -396,7 +423,7 @@ DEFAULT_METRICS = [
         "metric_name": "退款金额",
         "domain_key": "refund",
         "definition_name": "退款金额",
-        "description": "默认取退款主表 refund_amount 的汇总；分析退款商品时用退款明细表 refund_amount。",
+        "description": "订单级退款金额可汇总 refund_master.refund_amount；只要涉及品牌、产品、品类、SKU 等商品粒度分析或这些条件过滤，必须改用 refund_detail.refund_amount，并通过 order_detail.order_detail_id 关联，避免订单级退款金额被重复分摊。",
         "default_expression": "SUM(refund_master.refund_amount) 或 SUM(refund_detail.refund_amount)",
         "default_filters": "未特别指定时默认统计退款成功和退款处理中记录。",
         "related_tables": ["refund_master", "refund_detail"],
@@ -409,7 +436,7 @@ DEFAULT_METRICS = [
         "metric_name": "退款率",
         "domain_key": "refund",
         "definition_name": "退款率",
-        "description": "默认取退款金额 / 销售金额；订单级使用 refund_master.refund_amount 与 order_master.paid_amount，商品级需结合退款明细与订单明细口径。",
+        "description": "默认取退款金额 / 销售金额；订单级使用 refund_master.refund_amount 与 order_master.paid_amount，品牌、产品、品类、SKU 等商品粒度或相关过滤场景必须使用 refund_detail.refund_amount 与 order_detail.line_paid_amount，保持同一分析粒度。",
         "default_expression": "SUM(refund_master.refund_amount) / NULLIF(SUM(order_master.paid_amount) 或 SUM(order_detail.line_paid_amount), 0)",
         "default_filters": "退款率需要与销售金额保持同一时间范围、同一筛选条件和同一分析粒度。",
         "related_tables": ["order_master", "order_detail", "refund_master", "refund_detail"],
@@ -431,6 +458,84 @@ DEFAULT_METRICS = [
         "is_active": 1,
     },
     {
+        "metric_code": "refund_item_count",
+        "metric_name": "退款件数",
+        "domain_key": "refund",
+        "definition_name": "退款件数",
+        "description": "默认取退款主表 refund_item_count 的汇总；若按商品粒度分析，则优先使用 refund_detail.refund_quantity。",
+        "default_expression": "SUM(refund_master.refund_item_count) 或 SUM(refund_detail.refund_quantity)",
+        "default_filters": "退款件数需要与退款金额保持同一时间范围和同一筛选条件。",
+        "related_tables": ["refund_master", "refund_detail"],
+        "keywords": ["退款件数", "退款数量", "退货件数", "售后件数"],
+        "priority_score": 84,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "pay_buyer_count",
+        "metric_name": "支付买家数",
+        "domain_key": "user",
+        "definition_name": "支付买家数",
+        "description": "默认取订单主表中完成支付或履约订单的去重 buyer_id 数量。",
+        "default_expression": "COUNT(DISTINCT order_master.buyer_id)",
+        "default_filters": "若用户未限定订单状态，默认统计 已支付、已发货、已完成、部分退款。",
+        "related_tables": ["order_master", "user_info"],
+        "keywords": ["支付买家数", "下单用户数", "成交用户数", "支付用户数"],
+        "priority_score": 87,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "discount_amount",
+        "metric_name": "优惠金额",
+        "domain_key": "transaction",
+        "definition_name": "优惠金额",
+        "description": "订单级默认取订单主表 discount_amount 汇总；若按商品粒度分析则优先使用订单明细行优惠金额。",
+        "default_expression": "SUM(order_master.discount_amount) 或 SUM(order_detail.line_discount_amount)",
+        "default_filters": "通常与销售金额保持同一时间范围和同一筛选条件。",
+        "related_tables": ["order_master", "order_detail"],
+        "keywords": ["优惠金额", "折扣金额", "立减金额", "促销优惠"],
+        "priority_score": 83,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "discount_rate",
+        "metric_name": "优惠率",
+        "domain_key": "transaction",
+        "definition_name": "优惠率",
+        "description": "订单级默认取 discount_amount / gross_amount；若按品牌、产品、品类、SKU 等商品粒度分析，则改用订单明细行优惠金额 / 行原价金额。",
+        "default_expression": "SUM(order_master.discount_amount) / NULLIF(SUM(order_master.gross_amount), 0) 或 SUM(order_detail.line_discount_amount) / NULLIF(SUM(order_detail.line_gross_amount), 0)",
+        "default_filters": "优惠率需要与销售金额保持同一时间范围和同一筛选条件。",
+        "related_tables": ["order_master", "order_detail"],
+        "keywords": ["优惠率", "折扣率", "折扣占比", "让利率"],
+        "priority_score": 81,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "avg_selling_price",
+        "metric_name": "平均成交单价",
+        "domain_key": "product",
+        "definition_name": "平均成交单价",
+        "description": "默认取订单明细实付金额 / 销量，用于衡量商品真实成交单价。",
+        "default_expression": "SUM(order_detail.line_paid_amount) / NULLIF(SUM(order_detail.quantity), 0)",
+        "default_filters": "通常与销量、销售金额保持同一时间范围和同一筛选条件。",
+        "related_tables": ["order_detail", "order_master"],
+        "keywords": ["平均成交单价", "平均售价", "平均销售单价", "ASP"],
+        "priority_score": 79,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "items_per_order",
+        "metric_name": "单均件数",
+        "domain_key": "transaction",
+        "definition_name": "单均件数",
+        "description": "默认取商品件数 / 订单数，用于衡量平均每单购买件数。",
+        "default_expression": "SUM(order_master.item_count) / COUNT(DISTINCT order_master.order_id) 或 SUM(order_detail.quantity) / COUNT(DISTINCT order_detail.order_id)",
+        "default_filters": "通常与订单数、销量保持同一时间范围和同一筛选条件。",
+        "related_tables": ["order_master", "order_detail"],
+        "keywords": ["单均件数", "件单量", "平均每单件数", "平均件数"],
+        "priority_score": 77,
+        "is_active": 1,
+    },
+    {
         "metric_code": "user_count",
         "metric_name": "用户数",
         "domain_key": "user",
@@ -448,8 +553,12 @@ DEFAULT_METRICS = [
 DEFAULT_DIMENSIONS = [
     {"dimension_code": "sales_channel", "dimension_name": "销售渠道", "domain_key": "transaction", "description": "订单销售渠道，例如线下门店、天猫、京东、抖音。", "source_expression": "order_master.sales_channel", "related_tables": ["order_master", "order_detail"], "keywords": ["销售渠道", "渠道"], "priority_score": 90, "is_active": 1},
     {"dimension_code": "channel_type", "dimension_name": "渠道类型", "domain_key": "transaction", "description": "渠道所属类型，例如传统电商、兴趣电商、私域直营。", "source_expression": "order_master.channel_type 或 store_info.channel_type", "related_tables": ["order_master", "store_info"], "keywords": ["渠道类型"], "priority_score": 82, "is_active": 1},
+    {"dimension_code": "platform", "dimension_name": "平台", "domain_key": "transaction", "description": "订单来源平台，例如天猫、京东、抖音、小程序。", "source_expression": "order_master.platform", "related_tables": ["order_master"], "keywords": ["平台", "来源平台"], "priority_score": 84, "is_active": 1},
+    {"dimension_code": "payment_method", "dimension_name": "支付方式", "domain_key": "transaction", "description": "订单支付方式，例如微信支付、支付宝、银行卡。", "source_expression": "order_master.payment_method", "related_tables": ["order_master"], "keywords": ["支付方式", "微信支付", "支付宝", "银行卡"], "priority_score": 82, "is_active": 1},
     {"dimension_code": "sales_region", "dimension_name": "销售大区", "domain_key": "store", "description": "门店所在销售大区，例如华东大区、华南大区。", "source_expression": "store_info.sales_region", "related_tables": ["store_info", "order_master"], "keywords": ["销售大区", "大区", "华东", "华南", "华北", "华中", "西南", "西北"], "priority_score": 95, "is_active": 1},
     {"dimension_code": "store_name", "dimension_name": "门店名称", "domain_key": "store", "description": "门店或店铺名称。", "source_expression": "store_info.store_name", "related_tables": ["store_info", "order_master"], "keywords": ["门店", "店铺", "门店名称"], "priority_score": 88, "is_active": 1},
+    {"dimension_code": "store_type", "dimension_name": "门店类型", "domain_key": "store", "description": "门店经营类型，例如直营门店、经销门店、社区前置仓。", "source_expression": "store_info.store_type", "related_tables": ["store_info", "order_master"], "keywords": ["门店类型", "店型", "直营门店", "经销门店"], "priority_score": 83, "is_active": 1},
+    {"dimension_code": "org_level_1", "dimension_name": "一级组织", "domain_key": "store", "description": "门店所属一级组织，用于区域组织经营分析。", "source_expression": "store_info.org_level_1", "related_tables": ["store_info", "order_master"], "keywords": ["一级组织", "组织", "销售中心"], "priority_score": 79, "is_active": 1},
     {"dimension_code": "receiver_province", "dimension_name": "收货省份", "domain_key": "transaction", "description": "订单收货地址中的省份。", "source_expression": "order_master.receiver_province", "related_tables": ["order_master"], "keywords": ["省份", "收货省份", "地区", "河南", "江苏", "浙江", "广东"], "priority_score": 90, "is_active": 1},
     {"dimension_code": "receiver_city", "dimension_name": "收货城市", "domain_key": "transaction", "description": "订单收货地址中的城市。", "source_expression": "order_master.receiver_city", "related_tables": ["order_master"], "keywords": ["城市", "收货城市"], "priority_score": 82, "is_active": 1},
     {"dimension_code": "order_status", "dimension_name": "订单状态", "domain_key": "transaction", "description": "订单当前状态，仅可用中文状态值。", "source_expression": "order_master.order_status", "related_tables": ["order_master"], "keywords": ["订单状态", "已支付", "已完成", "已退款", "部分退款"], "priority_score": 84, "is_active": 1},
@@ -462,8 +571,15 @@ DEFAULT_DIMENSIONS = [
     {"dimension_code": "category_l2", "dimension_name": "二级品类", "domain_key": "product", "description": "产品二级品类。", "source_expression": "order_detail.category_l2 或 product_info.category_l2", "related_tables": ["order_detail", "product_info", "order_master"], "keywords": ["二级品类", "品类明细"], "priority_score": 84, "is_active": 1},
     {"dimension_code": "gender", "dimension_name": "性别", "domain_key": "user", "description": "用户性别。", "source_expression": "user_info.gender", "related_tables": ["user_info", "order_master"], "keywords": ["性别", "男", "女"], "priority_score": 88, "is_active": 1},
     {"dimension_code": "age", "dimension_name": "年龄", "domain_key": "user", "description": "用户年龄。", "source_expression": "user_info.age", "related_tables": ["user_info", "order_master"], "keywords": ["年龄", "18到25", "25到30"], "priority_score": 82, "is_active": 1},
+    {"dimension_code": "city_tier", "dimension_name": "城市等级", "domain_key": "user", "description": "用户常住城市等级，例如一线、新一线、二线。", "source_expression": "user_info.city_tier", "related_tables": ["user_info", "order_master"], "keywords": ["城市等级", "城市层级", "一线城市", "新一线"], "priority_score": 81, "is_active": 1},
     {"dimension_code": "member_level", "dimension_name": "会员等级", "domain_key": "user", "description": "用户会员等级。", "source_expression": "user_info.member_level", "related_tables": ["user_info", "order_master"], "keywords": ["会员等级", "金卡", "黑金", "新客"], "priority_score": 86, "is_active": 1},
+    {"dimension_code": "register_channel", "dimension_name": "注册渠道", "domain_key": "user", "description": "用户注册来源渠道。", "source_expression": "user_info.register_channel", "related_tables": ["user_info", "order_master"], "keywords": ["注册渠道", "注册来源", "拉新渠道"], "priority_score": 80, "is_active": 1},
+    {"dimension_code": "customer_tag", "dimension_name": "用户标签", "domain_key": "user", "description": "用户分层标签，例如家庭囤货、品质白领。", "source_expression": "user_info.customer_tag", "related_tables": ["user_info", "order_master"], "keywords": ["用户标签", "标签", "家庭囤货", "品质白领"], "priority_score": 77, "is_active": 1},
+    {"dimension_code": "device_type", "dimension_name": "设备类型", "domain_key": "user", "description": "用户常用设备类型，例如 iOS、Android。", "source_expression": "user_info.device_type", "related_tables": ["user_info", "order_master"], "keywords": ["设备类型", "终端类型", "iOS", "Android"], "priority_score": 73, "is_active": 1},
     {"dimension_code": "refund_reason", "dimension_name": "退款原因", "domain_key": "refund", "description": "退款或售后的原因分类。", "source_expression": "refund_master.refund_reason 或 refund_detail.refund_reason", "related_tables": ["refund_master", "refund_detail"], "keywords": ["退款原因", "售后原因", "包装破损", "配送超时"], "priority_score": 80, "is_active": 1},
+    {"dimension_code": "refund_type", "dimension_name": "退款类型", "domain_key": "refund", "description": "退款单据的售后类型，例如仅退款、退货退款。", "source_expression": "refund_master.refund_type", "related_tables": ["refund_master"], "keywords": ["退款类型", "售后类型", "仅退款", "退货退款"], "priority_score": 78, "is_active": 1},
+    {"dimension_code": "target_group", "dimension_name": "目标人群", "domain_key": "product", "description": "产品目标消费人群，例如儿童、家庭、职场白领。", "source_expression": "product_info.target_group", "related_tables": ["product_info", "order_detail", "order_master"], "keywords": ["目标人群", "儿童", "家庭", "白领"], "priority_score": 76, "is_active": 1},
+    {"dimension_code": "temperature_zone", "dimension_name": "温层", "domain_key": "product", "description": "产品温层类型，例如常温、低温、冷冻。", "source_expression": "product_info.temperature_zone", "related_tables": ["product_info", "order_detail", "order_master"], "keywords": ["温层", "常温", "低温", "冷冻"], "priority_score": 75, "is_active": 1},
 ]
 
 DEFAULT_JOINS = [
@@ -486,15 +602,30 @@ DEFAULT_SYNONYMS = [
     {"target_type": "metric", "target_key": "order_count", "standard_name": "订单数", "synonym_term": "单量", "related_tables": ["order_master"], "weight_score": 14, "is_active": 1},
     {"target_type": "metric", "target_key": "sales_volume", "standard_name": "销量", "synonym_term": "件数", "related_tables": ["order_detail", "order_master"], "weight_score": 14, "is_active": 1},
     {"target_type": "metric", "target_key": "refund_amount", "standard_name": "退款金额", "synonym_term": "售后金额", "related_tables": ["refund_master", "refund_detail"], "weight_score": 14, "is_active": 1},
+    {"target_type": "metric", "target_key": "refund_item_count", "standard_name": "退款件数", "synonym_term": "退货件数", "related_tables": ["refund_master", "refund_detail"], "weight_score": 12, "is_active": 1},
+    {"target_type": "metric", "target_key": "pay_buyer_count", "standard_name": "支付买家数", "synonym_term": "支付用户数", "related_tables": ["order_master", "user_info"], "weight_score": 13, "is_active": 1},
+    {"target_type": "metric", "target_key": "discount_amount", "standard_name": "优惠金额", "synonym_term": "折扣金额", "related_tables": ["order_master", "order_detail"], "weight_score": 12, "is_active": 1},
+    {"target_type": "metric", "target_key": "discount_rate", "standard_name": "优惠率", "synonym_term": "折扣率", "related_tables": ["order_master", "order_detail"], "weight_score": 11, "is_active": 1},
+    {"target_type": "metric", "target_key": "discount_rate", "standard_name": "优惠率", "synonym_term": "让利率", "related_tables": ["order_master", "order_detail"], "weight_score": 10, "is_active": 1},
+    {"target_type": "metric", "target_key": "avg_selling_price", "standard_name": "平均成交单价", "synonym_term": "平均售价", "related_tables": ["order_detail", "order_master"], "weight_score": 12, "is_active": 1},
+    {"target_type": "metric", "target_key": "items_per_order", "standard_name": "单均件数", "synonym_term": "件单量", "related_tables": ["order_master", "order_detail"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_region", "standard_name": "销售大区", "synonym_term": "大区", "related_tables": ["store_info", "order_master"], "weight_score": 12, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_region", "standard_name": "销售大区", "synonym_term": "区域", "related_tables": ["store_info", "order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "receiver_province", "standard_name": "收货省份", "synonym_term": "地区", "related_tables": ["order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "store_name", "standard_name": "门店名称", "synonym_term": "店铺", "related_tables": ["store_info", "order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "brand_name", "standard_name": "品牌", "synonym_term": "牌子", "related_tables": ["order_detail", "product_info", "order_master"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "platform", "standard_name": "平台", "synonym_term": "来源平台", "related_tables": ["order_master"], "weight_score": 10, "is_active": 1},
+    {"target_type": "dimension", "target_key": "sales_channel", "standard_name": "销售渠道", "synonym_term": "渠道", "related_tables": ["order_master", "order_detail"], "weight_score": 12, "is_active": 1},
+    {"target_type": "dimension", "target_key": "payment_method", "standard_name": "支付方式", "synonym_term": "付款方式", "related_tables": ["order_master"], "weight_score": 9, "is_active": 1},
+    {"target_type": "dimension", "target_key": "city_tier", "standard_name": "城市等级", "synonym_term": "城市层级", "related_tables": ["user_info", "order_master"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "org_level_1", "standard_name": "一级组织", "synonym_term": "组织", "related_tables": ["store_info", "order_master"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "register_channel", "standard_name": "注册渠道", "synonym_term": "拉新渠道", "related_tables": ["user_info", "order_master"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "target_group", "standard_name": "目标人群", "synonym_term": "人群", "related_tables": ["product_info", "order_detail"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "temperature_zone", "standard_name": "温层", "synonym_term": "温区", "related_tables": ["product_info", "order_detail"], "weight_score": 8, "is_active": 1},
     {"target_type": "table", "target_key": "refund_master", "standard_name": "退款主表", "synonym_term": "售后主表", "related_tables": ["refund_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "table", "target_key": "order_detail", "standard_name": "订单明细子表", "synonym_term": "订单子表", "related_tables": ["order_detail"], "weight_score": 10, "is_active": 1},
     {"target_type": "table", "target_key": "product_info", "standard_name": "产品信息维度表", "synonym_term": "商品表", "related_tables": ["product_info"], "weight_score": 8, "is_active": 1},
-    {"target_type": "dimension", "target_key": "sales_channel", "standard_name": "销售渠道", "synonym_term": "平台", "related_tables": ["order_master", "order_detail"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "sales_channel", "standard_name": "销售渠道", "synonym_term": "销售平台", "related_tables": ["order_master", "order_detail"], "weight_score": 8, "is_active": 1},
 ]
 
 DEFAULT_EXAMPLES = [
@@ -544,6 +675,90 @@ DEFAULT_EXAMPLES = [
         "related_dimensions": ["退款原因"],
         "sql_example": "SELECT refund_reason AS 退款原因, SUM(refund_amount) AS 退款金额, COUNT(DISTINCT refund_id) AS 退款单数 FROM refund_master WHERE applied_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY refund_reason ORDER BY 退款金额 DESC LIMIT 200",
         "priority_score": 82,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_channel_gmv_refund_rate",
+        "domain_key": "transaction",
+        "question_text": "按销售渠道统计近30天GMV、退款金额和退款率，按销售渠道展示",
+        "summary_text": "按销售渠道做订单级 GMV 与退款分析时，可用订单主表结合退款主表；如果问题额外限定品牌、产品、品类或 SKU，则退款金额和退款率必须切换到 refund_detail 口径。",
+        "related_tables": ["order_master", "order_detail", "refund_master"],
+        "related_metrics": ["销售金额", "退款金额", "退款率"],
+        "related_dimensions": ["销售渠道"],
+        "sql_example": "WITH sales AS (SELECT om.sales_channel AS 销售渠道, SUM(od.line_paid_amount) AS GMV FROM order_master om JOIN order_detail od ON om.order_id = od.order_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY om.sales_channel), refunds AS (SELECT om.sales_channel AS 销售渠道, SUM(rm.refund_amount) AS 退款金额 FROM refund_master rm JOIN order_master om ON rm.order_id = om.order_id WHERE rm.applied_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY om.sales_channel) SELECT s.销售渠道 AS 销售渠道, s.GMV AS GMV, COALESCE(r.退款金额, 0) AS 退款金额, CASE WHEN s.GMV = 0 THEN 0 ELSE COALESCE(r.退款金额, 0) / s.GMV END AS 退款率 FROM sales s LEFT JOIN refunds r ON s.销售渠道 = r.销售渠道 ORDER BY 销售渠道 DESC LIMIT 200",
+        "priority_score": 94,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_brand_channel_gmv_refund_rate",
+        "domain_key": "product",
+        "question_text": "统计近30天各渠道蒙牛GMV、退款金额和退款率，按渠道降序展示",
+        "summary_text": "问题包含品牌过滤但按渠道展示，销售金额必须使用订单明细 line_paid_amount，退款金额和退款率必须改用退款明细 refund_detail 口径，并通过 order_detail.order_detail_id 关联，避免订单级退款金额被重复累计。",
+        "related_tables": ["order_master", "order_detail", "refund_master", "refund_detail"],
+        "related_metrics": ["销售金额", "退款金额", "退款率"],
+        "related_dimensions": ["销售渠道", "品牌"],
+        "sql_example": "WITH sales AS (SELECT om.sales_channel AS 销售渠道, SUM(od.line_paid_amount) AS GMV FROM order_master om JOIN order_detail od ON om.order_id = od.order_id WHERE od.brand_name = '蒙牛' AND om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY om.sales_channel), refunds AS (SELECT om.sales_channel AS 销售渠道, SUM(rd.refund_amount) AS 退款金额 FROM refund_detail rd JOIN refund_master rm ON rd.refund_id = rm.refund_id JOIN order_detail od ON rd.order_detail_id = od.order_detail_id JOIN order_master om ON od.order_id = om.order_id WHERE od.brand_name = '蒙牛' AND rm.applied_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY om.sales_channel) SELECT s.销售渠道 AS 销售渠道, s.GMV AS GMV, COALESCE(r.退款金额, 0) AS 退款金额, CASE WHEN s.GMV = 0 THEN 0 ELSE COALESCE(r.退款金额, 0) / s.GMV END AS 退款率 FROM sales s LEFT JOIN refunds r ON s.销售渠道 = r.销售渠道 ORDER BY GMV DESC LIMIT 200",
+        "priority_score": 97,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_brand_member_sales_refund",
+        "domain_key": "product",
+        "question_text": "按品牌和会员等级统计近30天销售金额、销量和退款金额",
+        "summary_text": "需要订单主表、订单明细、用户信息和退款明细联查，按品牌和会员等级分组。",
+        "related_tables": ["order_master", "order_detail", "user_info", "refund_master", "refund_detail"],
+        "related_metrics": ["销售金额", "销量", "退款金额"],
+        "related_dimensions": ["品牌", "会员等级"],
+        "sql_example": "WITH sales_data AS (SELECT od.brand_name AS 品牌, ui.member_level AS 会员等级, SUM(od.line_paid_amount) AS 销售金额, SUM(od.quantity) AS 销量 FROM order_master om JOIN order_detail od ON om.order_id = od.order_id JOIN user_info ui ON om.buyer_id = ui.user_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY od.brand_name, ui.member_level), refund_data AS (SELECT od.brand_name AS 品牌, ui.member_level AS 会员等级, SUM(rd.refund_amount) AS 退款金额 FROM refund_master rm JOIN refund_detail rd ON rm.refund_id = rd.refund_id JOIN order_detail od ON rd.order_detail_id = od.order_detail_id JOIN user_info ui ON rm.buyer_id = ui.user_id WHERE rm.applied_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY od.brand_name, ui.member_level) SELECT s.品牌 AS 品牌, s.会员等级 AS 会员等级, s.销售金额 AS 销售金额, s.销量 AS 销量, COALESCE(r.退款金额, 0) AS 退款金额 FROM sales_data s LEFT JOIN refund_data r ON s.品牌 = r.品牌 AND s.会员等级 = r.会员等级 ORDER BY 销售金额 DESC LIMIT 200",
+        "priority_score": 91,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_category_discount",
+        "domain_key": "product",
+        "question_text": "按一级品类统计近30天销售金额、优惠金额和平均成交单价",
+        "summary_text": "需要订单明细关联订单主表，按一级品类分组统计销售、优惠和平均成交单价。",
+        "related_tables": ["order_master", "order_detail"],
+        "related_metrics": ["销售金额", "优惠金额", "平均成交单价"],
+        "related_dimensions": ["一级品类"],
+        "sql_example": "SELECT od.category_l1 AS 一级品类, SUM(od.line_paid_amount) AS 销售金额, SUM(od.line_discount_amount) AS 优惠金额, CASE WHEN SUM(od.quantity) = 0 THEN 0 ELSE SUM(od.line_paid_amount) / SUM(od.quantity) END AS 平均成交单价 FROM order_detail od JOIN order_master om ON od.order_id = om.order_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY od.category_l1 ORDER BY 销售金额 DESC LIMIT 200",
+        "priority_score": 88,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_payment_method_sales",
+        "domain_key": "transaction",
+        "question_text": "按支付方式统计近30天销售金额、订单数和客单价",
+        "summary_text": "需要使用订单主表，按支付方式分组，汇总销售金额、订单数，并计算客单价。",
+        "related_tables": ["order_master"],
+        "related_metrics": ["销售金额", "订单数", "客单价"],
+        "related_dimensions": ["支付方式"],
+        "sql_example": "SELECT om.payment_method AS 支付方式, SUM(om.paid_amount) AS 销售金额, COUNT(DISTINCT om.order_id) AS 订单数, CASE WHEN COUNT(DISTINCT om.order_id)=0 THEN 0 ELSE SUM(om.paid_amount)/COUNT(DISTINCT om.order_id) END AS 客单价 FROM order_master om WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY om.payment_method ORDER BY 销售金额 DESC LIMIT 200",
+        "priority_score": 82,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_category_discount_rate",
+        "domain_key": "product",
+        "question_text": "按一级品类统计近30天优惠金额、优惠率和平均成交单价",
+        "summary_text": "需要使用订单明细关联订单主表；商品粒度优惠率必须使用 line_discount_amount / line_gross_amount，平均成交单价取 line_paid_amount / quantity。",
+        "related_tables": ["order_detail", "order_master"],
+        "related_metrics": ["优惠金额", "优惠率", "平均成交单价"],
+        "related_dimensions": ["一级品类"],
+        "sql_example": "SELECT od.category_l1 AS 一级品类, SUM(od.line_discount_amount) AS 优惠金额, CASE WHEN SUM(od.line_gross_amount)=0 THEN 0 ELSE SUM(od.line_discount_amount)/SUM(od.line_gross_amount) END AS 优惠率, CASE WHEN SUM(od.quantity)=0 THEN 0 ELSE SUM(od.line_paid_amount)/SUM(od.quantity) END AS 平均成交单价 FROM order_detail od JOIN order_master om ON od.order_id = om.order_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY od.category_l1 ORDER BY 优惠金额 DESC LIMIT 200",
+        "priority_score": 86,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_city_tier_pay_buyer",
+        "domain_key": "user",
+        "question_text": "按城市等级统计近30天支付买家数和销售金额",
+        "summary_text": "需要使用订单主表关联用户表，按城市等级分组，统计支付买家数与销售金额。",
+        "related_tables": ["order_master", "user_info"],
+        "related_metrics": ["支付买家数", "销售金额"],
+        "related_dimensions": ["城市等级"],
+        "sql_example": "SELECT ui.city_tier AS 城市等级, COUNT(DISTINCT om.buyer_id) AS 支付买家数, SUM(om.paid_amount) AS 销售金额 FROM order_master om JOIN user_info ui ON om.buyer_id = ui.user_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY ui.city_tier ORDER BY 销售金额 DESC LIMIT 200",
+        "priority_score": 84,
         "is_active": 1,
     },
 ]
@@ -769,6 +984,22 @@ def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+@lru_cache(maxsize=64)
+def get_distinct_dimension_values(table_name: str, column_name: str) -> tuple[str, ...]:
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT DISTINCT `{column_name}` AS value FROM `{table_name}` WHERE `{column_name}` IS NOT NULL AND `{column_name}` <> ''"
+            )
+            rows = cursor.fetchall()
+    values: list[str] = []
+    for row in rows:
+        value = _safe_text(row.get("value"))
+        if value and value not in values:
+            values.append(value)
+    return tuple(values)
 
 
 def _get_embedding_client() -> OpenAI | None:
@@ -1627,6 +1858,34 @@ def _append_columns(target: dict[str, list[str]], table_name: str, columns: list
             bucket.append(column_name)
 
 
+def _get_dimension_distinct_values(dimension_code: str) -> list[str]:
+    values: list[str] = []
+    for table_name, column_name in DIMENSION_VALUE_SOURCES.get(dimension_code, []):
+        for value in get_distinct_dimension_values(table_name, column_name):
+            normalized_value = _safe_text(value)
+            if len(normalized_value) < 2 or normalized_value in values:
+                continue
+            values.append(normalized_value)
+            if len(values) >= 120:
+                return values
+    return values
+
+
+def _extract_dimension_value_matches(question_text: str, selected_dimension_rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    normalized_question = _normalize_for_match(question_text)
+    matches: dict[str, list[str]] = {}
+    for dimension_row in selected_dimension_rows:
+        matched_values: list[str] = []
+        for value in _get_dimension_distinct_values(dimension_row.get("dimension_code", "")):
+            if _normalize_for_match(value) in normalized_question and value not in matched_values:
+                matched_values.append(value)
+            if len(matched_values) >= MAX_MATCHED_DIMENSION_VALUES:
+                break
+        if matched_values:
+            matches[dimension_row["dimension_code"]] = matched_values
+    return matches
+
+
 def _is_explicit_group_dimension(question_text: str, dimension_row: dict[str, Any]) -> bool:
     normalized_question = _normalize_for_match(question_text)
     terms = [dimension_row.get("dimension_name", ""), *dimension_row.get("keywords", [])]
@@ -1672,30 +1931,46 @@ def _build_relevant_column_refs(
     metric_codes = {row.get("metric_code", "") for row in selected_metric_rows}
     dimension_codes = {row.get("dimension_code", "") for row in selected_dimension_rows}
 
-    if metric_codes.intersection({"sales_amount", "order_count", "avg_order_value", "refund_rate"}):
+    if metric_codes.intersection({"sales_amount", "order_count", "avg_order_value", "refund_rate", "discount_amount", "discount_rate", "pay_buyer_count", "items_per_order"}):
         _append_columns(refs, "order_master", ["order_id", "created_at", "order_status"])
-    if metric_codes.intersection({"sales_amount", "avg_order_value"}):
-        _append_columns(refs, "order_master", ["paid_amount", "sales_channel"])
-        _append_columns(refs, "order_detail", ["order_id", "line_paid_amount", "line_gross_amount"])
+    if metric_codes.intersection({"sales_amount", "avg_order_value", "discount_amount", "discount_rate", "pay_buyer_count", "items_per_order"}):
+        _append_columns(refs, "order_master", ["buyer_id", "paid_amount", "gross_amount", "discount_amount", "item_count", "sales_channel", "channel_type", "platform", "payment_method"])
+        _append_columns(refs, "order_detail", ["order_id", "line_paid_amount", "line_gross_amount", "line_discount_amount", "quantity", "brand_name"])
     if metric_codes.intersection({"sales_volume", "gross_merchandise_amount"}):
         _append_columns(refs, "order_detail", ["order_id", "quantity", "line_paid_amount", "line_gross_amount"])
-    if metric_codes.intersection({"refund_amount", "refund_count", "refund_rate"}):
-        _append_columns(refs, "refund_master", ["refund_id", "order_id", "refund_amount", "refund_status", "applied_at"])
-    if "refund_amount" in metric_codes and "refund_detail" in PROMPT_FIELD_HINTS:
-        _append_columns(refs, "refund_detail", ["refund_id", "order_detail_id", "refund_amount"])
+    if metric_codes.intersection({"refund_amount", "refund_count", "refund_rate", "refund_item_count"}):
+        _append_columns(refs, "refund_master", ["refund_id", "order_id", "refund_amount", "refund_item_count", "refund_status", "refund_type", "applied_at"])
+    if metric_codes.intersection({"refund_amount", "refund_rate", "refund_item_count"}) and "refund_detail" in PROMPT_FIELD_HINTS:
+        _append_columns(refs, "refund_detail", ["refund_id", "order_detail_id", "product_id", "refund_amount", "refund_quantity"])
     if "user_count" in metric_codes:
         _append_columns(refs, "user_info", ["user_id"])
+    if "avg_selling_price" in metric_codes:
+        _append_columns(refs, "order_detail", ["quantity", "line_paid_amount", "product_id"])
 
     dimension_hint_map = {
         "sales_channel": ("order_master", ["sales_channel"]),
+        "platform": ("order_master", ["platform"]),
+        "payment_method": ("order_master", ["payment_method"]),
+        "channel_type": ("order_master", ["channel_type"]),
         "receiver_province": ("order_master", ["receiver_province"]),
+        "receiver_city": ("order_master", ["receiver_city"]),
         "brand_name": ("order_detail", ["brand_name"]),
+        "product_name": ("order_detail", ["product_name"]),
         "member_level": ("user_info", ["member_level"]),
+        "city_tier": ("user_info", ["city_tier"]),
+        "register_channel": ("user_info", ["register_channel"]),
+        "customer_tag": ("user_info", ["customer_tag"]),
+        "device_type": ("user_info", ["device_type"]),
         "sales_region": ("store_info", ["sales_region"]),
         "store_name": ("store_info", ["store_name"]),
+        "store_type": ("store_info", ["store_type"]),
+        "org_level_1": ("store_info", ["org_level_1"]),
         "category_l1": ("order_detail", ["category_l1"]),
         "category_l2": ("order_detail", ["category_l2"]),
+        "target_group": ("product_info", ["target_group"]),
+        "temperature_zone": ("product_info", ["temperature_zone"]),
         "refund_reason": ("refund_master", ["refund_reason"]),
+        "refund_type": ("refund_master", ["refund_type"]),
     }
     for dimension_code in dimension_codes:
         table_and_fields = dimension_hint_map.get(dimension_code)
@@ -1751,6 +2026,7 @@ def _build_semantic_prompt_text(
     prompt_mode: str,
     extra_sql_text: str = "",
 ) -> str:
+    matched_dimension_values = _extract_dimension_value_matches(question, selected_dimension_rows)
     group_dimensions = [
         row for row in selected_dimension_rows
         if _is_explicit_group_dimension(question, row)
@@ -1758,6 +2034,10 @@ def _build_semantic_prompt_text(
     filter_dimensions = [
         row for row in selected_dimension_rows
         if row["dimension_code"] not in {item["dimension_code"] for item in group_dimensions}
+        and (
+            row["dimension_code"] in matched_dimension_values
+            or any(_normalize_for_match(keyword) in _normalize_for_match(question) for keyword in row.get("keywords", []))
+        )
     ]
     relevant_column_refs = _build_relevant_column_refs(
         selected_metric_rows,
@@ -1788,8 +2068,10 @@ def _build_semantic_prompt_text(
     if filter_dimensions:
         prompt_lines.append("候选过滤维度:")
         for dimension_row in filter_dimensions:
+            matched_values = matched_dimension_values.get(dimension_row["dimension_code"], [])
+            matched_text = f"；识别值：{'、'.join(matched_values)}" if matched_values else ""
             prompt_lines.append(
-                f"- {dimension_row['dimension_name']}：表达式 {dimension_row.get('source_expression', '')}"
+                f"- {dimension_row['dimension_name']}：表达式 {dimension_row.get('source_expression', '')}{matched_text}"
             )
 
     prompt_lines.append("候选业务表:")
@@ -1984,6 +2266,9 @@ def retrieve_semantic_context(
                 dimension_overlap = example_dimensions.intersection(selected_dimension_name_set)
                 if selected_group_dimension_name_set and example_dimensions and not example_dimensions.intersection(selected_group_dimension_name_set):
                     continue
+                extra_dimensions = example_dimensions - selected_dimension_name_set
+                if selected_dimension_name_set and extra_dimensions and not is_context_dependent_question(question):
+                    continue
                 if not (metric_overlap or dimension_overlap):
                     continue
             selected_example_rows.append(payload)
@@ -2016,8 +2301,6 @@ def retrieve_semantic_context(
         column_map = entities["column_map"]
         if not selected_metric_rows:
             selected_metric_rows = entities["metrics"][:3]
-        if not selected_dimension_rows:
-            selected_dimension_rows = entities["dimensions"][:2]
         if not selected_table_rows:
             selected_table_rows = [table_lookup.get('order_master', DEFAULT_TABLES[0])]
 
@@ -2120,7 +2403,7 @@ def get_admin_bootstrap() -> dict[str, Any]:
     return payload
 
 
-def upsert_admin_entity(entity: str, payload: dict[str, Any]) -> None:
+def upsert_admin_entity(entity: str, payload: dict[str, Any], *, rebuild: bool = True) -> None:
     ensure_semantic_runtime()
     config = ADMIN_ENTITY_CONFIG.get(entity)
     if not config or config.get("read_only"):
@@ -2128,7 +2411,8 @@ def upsert_admin_entity(entity: str, payload: dict[str, Any]) -> None:
 
     row = dict(payload)
     for field in config.get("json_fields", []):
-        row[field] = _json_dumps(row.get(field))
+        source_field = field[:-5] if field.endswith("_json") else field
+        row[field] = _json_dumps(row.get(field, row.get(source_field)))
     if "priority_score" in row:
         row["priority_score"] = int(row.get("priority_score") or 0)
     if "weight_score" in row:
@@ -2156,8 +2440,9 @@ def upsert_admin_entity(entity: str, payload: dict[str, Any]) -> None:
         with conn.cursor() as cursor:
             cursor.execute(sql, values)
         conn.commit()
-        rebuild_semantic_search(conn, refresh_embeddings=False)
-        conn.commit()
+        if rebuild:
+            rebuild_semantic_search(conn, refresh_embeddings=False)
+            conn.commit()
 
 
 def delete_admin_entity(entity: str, payload: dict[str, Any]) -> None:
@@ -2187,6 +2472,47 @@ def rebuild_admin_search(refresh_embeddings: bool = False) -> dict[str, int]:
         result = rebuild_semantic_search(conn, refresh_embeddings=refresh_embeddings)
         conn.commit()
         return result
+
+
+def sync_builtin_semantic_knowledge(refresh_embeddings: bool = False) -> dict[str, int]:
+    ensure_semantic_runtime()
+    synonym_id_lookup: dict[tuple[str, str, str], int] = {}
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT `id`, `target_type`, `target_key`, `synonym_term` FROM `semantic_synonym`")
+            for row in cursor.fetchall():
+                synonym_id_lookup[
+                    (
+                        _safe_text(row.get("target_type")),
+                        _safe_text(row.get("target_key")),
+                        _safe_text(row.get("synonym_term")),
+                    )
+                ] = int(row.get("id"))
+
+    builtin_entities = [
+        ("domains", DEFAULT_DOMAINS),
+        ("tables", DEFAULT_TABLES),
+        ("metrics", DEFAULT_METRICS),
+        ("dimensions", DEFAULT_DIMENSIONS),
+        ("joins", DEFAULT_JOINS),
+        ("synonyms", DEFAULT_SYNONYMS),
+        ("examples", DEFAULT_EXAMPLES),
+    ]
+    for entity, rows in builtin_entities:
+        for row in rows:
+            payload = dict(row)
+            if entity == "synonyms":
+                synonym_id = synonym_id_lookup.get(
+                    (
+                        _safe_text(payload.get("target_type")),
+                        _safe_text(payload.get("target_key")),
+                        _safe_text(payload.get("synonym_term")),
+                    )
+                )
+                if synonym_id:
+                    payload["id"] = synonym_id
+            upsert_admin_entity(entity, payload, rebuild=False)
+    return rebuild_admin_search(refresh_embeddings=refresh_embeddings)
 
 
 def get_semantic_maintenance_guide() -> dict[str, list[str]]:
