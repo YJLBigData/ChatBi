@@ -72,8 +72,9 @@ ORDER_GROUP_DOUBLE_QUOTED_PATTERN = re.compile(
     r'(?P<clause>\b(?:ORDER\s+BY|GROUP\s+BY|PARTITION\s+BY)\s+)"(?P<identifier>[^"\n]+)"',
     re.IGNORECASE,
 )
+SQL_TAIL_CLAUSE_PATTERN = re.compile(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT)\b', re.IGNORECASE)
 COLUMN_REF_PATTERN = re.compile(
-    r'\b(order_master|order_detail|refund_master|refund_detail|store_info|user_info|product_info)\.([a-zA-Z_][\w]*)\b',
+    r'\b(order_master|order_detail|refund_master|refund_detail|store_info|user_info|product_info|inventory_stock)\.([a-zA-Z_][\w]*)\b',
     re.IGNORECASE,
 )
 
@@ -254,16 +255,17 @@ def apply_default_metric_filters(sql: str, question: str, selected_metrics: list
         return replaced_sql
 
     lower_sql = normalized_sql.lower()
-    insertion_points = [' group by ', ' order by ', ' limit ']
-    insert_at = len(normalized_sql)
-    for marker in insertion_points:
-        position = lower_sql.find(marker)
-        if position != -1:
-            insert_at = min(insert_at, position)
-    if ' where ' in lower_sql:
-        rewritten_sql = f"{normalized_sql[:insert_at]} AND {default_clause}{normalized_sql[insert_at:]}"
+    tail_match = SQL_TAIL_CLAUSE_PATTERN.search(normalized_sql)
+    insert_at = tail_match.start() if tail_match else len(normalized_sql)
+    has_where_clause = bool(re.search(r'\bwhere\b', lower_sql))
+    head = normalized_sql[:insert_at].rstrip()
+    tail = normalized_sql[insert_at:].lstrip()
+    if has_where_clause:
+        rewritten_sql = f"{head}\n  AND {default_clause}"
     else:
-        rewritten_sql = f"{normalized_sql[:insert_at]} WHERE {default_clause}{normalized_sql[insert_at:]}"
+        rewritten_sql = f"{head}\nWHERE {default_clause}"
+    if tail:
+        rewritten_sql = f"{rewritten_sql}\n{tail}"
     logger.info('sql default pay_buyer_count order_status appended sql=%s', rewritten_sql[:800])
     return rewritten_sql
 

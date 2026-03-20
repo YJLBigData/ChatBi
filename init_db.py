@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from chatbi.domain.geo_catalog import city_meta, city_names, province_meta, province_names
 from chatbi.domain.product_catalog import MENGNIU_PRODUCT_CATALOG
 from chatbi.service.data_quality_service import ensure_data_quality_runtime, run_data_quality_audit
+from chatbi.service.inventory_service import INVENTORY_STOCK_DDL, ensure_inventory_runtime
 from semantic_layer import ensure_semantic_runtime
 
 
@@ -292,10 +293,12 @@ def recreate_tables() -> None:
             CONSTRAINT `fk_refund_detail_product` FOREIGN KEY (`product_id`) REFERENCES `product_info` (`product_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退款明细子表';
         """,
+        INVENTORY_STOCK_DDL,
     ]
 
     drop_order = [
         "SET FOREIGN_KEY_CHECKS = 0",
+        "DROP TABLE IF EXISTS `inventory_stock`",
         "DROP TABLE IF EXISTS `refund_detail`",
         "DROP TABLE IF EXISTS `refund_master`",
         "DROP TABLE IF EXISTS `order_detail`",
@@ -802,12 +805,14 @@ def seed_dimensions(user_count: int) -> dict[str, int]:
                 """,
                 product_rows,
             )
+            inventory_result = ensure_inventory_runtime(conn)
         conn.commit()
 
     return {
         "users": len(user_rows),
         "stores": len(store_rows),
         "products": len(product_rows),
+        "inventory": inventory_result["rows"],
         "user_objects": users,
         "store_objects": stores,
         "product_objects": products,
@@ -841,6 +846,7 @@ def main() -> None:
         f"{database}.user_info={dimension_result['users']}, "
         f"{database}.store_info={dimension_result['stores']}, "
         f"{database}.product_info={dimension_result['products']}, "
+        f"{database}.inventory_stock={dimension_result['inventory']}, "
         f"{database}.order_master={fact_result['orders']}, "
         f"{database}.order_detail={fact_result['details']}, "
         f"{database}.refund_master={fact_result['refunds']}, "

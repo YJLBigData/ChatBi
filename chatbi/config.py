@@ -57,6 +57,7 @@ ALLOWED_BASE_TABLES = {
     'store_info',
     'refund_master',
     'refund_detail',
+    'inventory_stock',
 }
 
 TODAY_STR = date.today().isoformat()

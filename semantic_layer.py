@@ -49,13 +49,14 @@ PROMPT_FIELD_HINTS: dict[str, list[str]] = {
     "order_detail": ["order_detail_id", "order_id", "brand_name", "product_id", "product_name", "category_l1", "category_l2", "line_paid_amount", "line_gross_amount", "line_discount_amount", "quantity", "sales_channel"],
     "refund_master": ["refund_id", "order_id", "buyer_id", "store_id", "refund_amount", "refund_item_count", "refund_status", "refund_type", "refund_reason", "applied_at"],
     "refund_detail": ["refund_detail_id", "refund_id", "order_detail_id", "product_id", "refund_amount", "refund_reason", "refund_quantity"],
+    "inventory_stock": ["inventory_id", "snapshot_date", "store_id", "product_id", "sales_channel", "warehouse_name", "warehouse_type", "on_hand_qty", "reserved_qty", "available_qty", "in_transit_qty", "safety_stock_qty", "damaged_qty", "inventory_amount", "days_of_supply", "stock_status"],
     "user_info": ["user_id", "member_level", "gender", "age", "province", "province_code", "city", "city_code", "city_tier", "register_channel", "preferred_channel", "customer_tag", "device_type"],
     "store_info": ["store_id", "store_name", "store_type", "sales_region", "channel_name", "channel_type", "province", "province_code", "city", "city_code", "district", "org_level_1"],
     "product_info": ["product_id", "sku_code", "barcode", "brand_name", "product_name", "category_l1", "category_l2", "channel_type", "target_group", "temperature_zone", "list_price", "cost_price", "shelf_life_days"],
 }
 
 DIMENSION_VALUE_SOURCES: dict[str, list[tuple[str, str]]] = {
-    "sales_channel": [("order_master", "sales_channel"), ("order_detail", "sales_channel")],
+    "sales_channel": [("order_master", "sales_channel"), ("order_detail", "sales_channel"), ("inventory_stock", "sales_channel")],
     "channel_type": [("order_master", "channel_type"), ("store_info", "channel_type"), ("product_info", "channel_type")],
     "platform": [("order_master", "platform")],
     "sales_region": [("store_info", "sales_region")],
@@ -80,6 +81,10 @@ DIMENSION_VALUE_SOURCES: dict[str, list[tuple[str, str]]] = {
     "target_group": [("product_info", "target_group")],
     "temperature_zone": [("product_info", "temperature_zone")],
     "org_level_1": [("store_info", "org_level_1")],
+    "inventory_snapshot_date": [("inventory_stock", "snapshot_date")],
+    "warehouse_name": [("inventory_stock", "warehouse_name")],
+    "warehouse_type": [("inventory_stock", "warehouse_type")],
+    "stock_status": [("inventory_stock", "stock_status")],
     "refund_reason": [("refund_master", "refund_reason"), ("refund_detail", "refund_reason")],
     "refund_type": [("refund_master", "refund_type")],
 }
@@ -269,6 +274,7 @@ DEFAULT_DOMAINS = [
     {"domain_key": "product", "domain_name": "产品域", "description": "产品、品牌、品类和SKU分析", "priority_score": 85, "is_active": 1},
     {"domain_key": "store", "domain_name": "门店域", "description": "门店、渠道、大区和组织分析", "priority_score": 85, "is_active": 1},
     {"domain_key": "refund", "domain_name": "售后域", "description": "退款、退货和售后分析", "priority_score": 80, "is_active": 1},
+    {"domain_key": "inventory", "domain_name": "库存域", "description": "库存、缺货、在途和库存金额分析", "priority_score": 82, "is_active": 1},
 ]
 
 DEFAULT_TABLES = [
@@ -330,6 +336,18 @@ DEFAULT_TABLES = [
         "business_dimensions": ["门店名称", "门店类型", "渠道名称", "渠道类型", "销售大区", "省份", "城市", "一级组织", "二级组织"],
         "business_metrics": ["门店销售金额", "门店订单数", "大区销售金额", "退款金额"],
         "priority_score": 91,
+        "is_active": 1,
+    },
+    {
+        "table_name": "inventory_stock",
+        "domain_key": "inventory",
+        "business_name": "库存快照表",
+        "table_role": "事实表",
+        "description": "记录门店或渠道维度下商品的库存快照，可用于在库量、可售库存、在途库存、安全库存、缺货SKU数和库存金额分析。",
+        "keywords": ["库存", "可售库存", "可用库存", "在库", "库存量", "在途库存", "安全库存", "缺货", "库存金额", "货值", "库存状态", "库存预警", "库存天数", "周转天数", "仓库"],
+        "business_dimensions": ["销售渠道", "销售大区", "省份", "仓库名称", "仓库类型", "库存状态", "品牌", "产品名称", "一级品类", "快照日期"],
+        "business_metrics": ["在库量", "可售库存", "在途库存", "库存金额", "缺货SKU数"],
+        "priority_score": 93,
         "is_active": 1,
     },
     {
@@ -554,20 +572,89 @@ DEFAULT_METRICS = [
         "priority_score": 85,
         "is_active": 1,
     },
+    {
+        "metric_code": "on_hand_inventory",
+        "metric_name": "在库量",
+        "domain_key": "inventory",
+        "definition_name": "在库量",
+        "description": "默认取库存快照表 on_hand_qty 的汇总，用于衡量当前账面库存总量。",
+        "default_expression": "SUM(inventory_stock.on_hand_qty)",
+        "default_filters": "默认取最新库存快照，可与品牌、产品、门店、大区、渠道等维度联动分析。",
+        "related_tables": ["inventory_stock"],
+        "keywords": ["在库量", "库存量", "当前库存", "库存总量"],
+        "priority_score": 88,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "available_inventory",
+        "metric_name": "可售库存",
+        "domain_key": "inventory",
+        "definition_name": "可售库存",
+        "description": "默认取库存快照表 available_qty 的汇总，用于衡量当前可销售库存。",
+        "default_expression": "SUM(inventory_stock.available_qty)",
+        "default_filters": "默认取最新库存快照，是库存预警、缺货分析和补货分析的核心口径。",
+        "related_tables": ["inventory_stock"],
+        "keywords": ["可售库存", "可用库存", "可卖库存", "可售量"],
+        "priority_score": 94,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "in_transit_inventory",
+        "metric_name": "在途库存",
+        "domain_key": "inventory",
+        "definition_name": "在途库存",
+        "description": "默认取库存快照表 in_transit_qty 的汇总，用于衡量已经在途但尚未入仓或上架的库存量。",
+        "default_expression": "SUM(inventory_stock.in_transit_qty)",
+        "default_filters": "默认取最新库存快照，可结合缺货与预警状态分析补货节奏。",
+        "related_tables": ["inventory_stock"],
+        "keywords": ["在途库存", "运输中库存", "途中新货"],
+        "priority_score": 83,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "inventory_amount",
+        "metric_name": "库存金额",
+        "domain_key": "inventory",
+        "definition_name": "库存金额",
+        "description": "默认取库存快照表 inventory_amount 的汇总，按成本口径衡量库存货值。",
+        "default_expression": "SUM(inventory_stock.inventory_amount)",
+        "default_filters": "默认取最新库存快照，可用于库存资金占用和滞销库存分析。",
+        "related_tables": ["inventory_stock"],
+        "keywords": ["库存金额", "库存货值", "库存成本", "货值"],
+        "priority_score": 85,
+        "is_active": 1,
+    },
+    {
+        "metric_code": "stockout_sku_count",
+        "metric_name": "缺货SKU数",
+        "domain_key": "inventory",
+        "definition_name": "缺货SKU数",
+        "description": "默认取可售库存小于等于0的去重 product_id 数量，用于识别缺货风险。",
+        "default_expression": "COUNT(DISTINCT CASE WHEN inventory_stock.available_qty <= 0 THEN inventory_stock.product_id END)",
+        "default_filters": "默认取最新库存快照，可按渠道、品牌、大区、门店等维度拆分。",
+        "related_tables": ["inventory_stock"],
+        "keywords": ["缺货SKU数", "缺货商品数", "缺货数", "断货SKU数"],
+        "priority_score": 82,
+        "is_active": 1,
+    },
 ]
 
 DEFAULT_DIMENSIONS = [
-    {"dimension_code": "sales_channel", "dimension_name": "销售渠道", "domain_key": "transaction", "description": "订单销售渠道，例如线下门店、天猫、京东、抖音。", "source_expression": "order_master.sales_channel", "related_tables": ["order_master", "order_detail"], "keywords": ["销售渠道", "渠道"], "priority_score": 90, "is_active": 1},
+    {"dimension_code": "sales_channel", "dimension_name": "销售渠道", "domain_key": "transaction", "description": "订单或库存所属销售渠道，例如线下门店、天猫、京东、抖音。", "source_expression": "order_master.sales_channel 或 inventory_stock.sales_channel", "related_tables": ["order_master", "order_detail", "inventory_stock"], "keywords": ["销售渠道", "渠道"], "priority_score": 90, "is_active": 1},
     {"dimension_code": "channel_type", "dimension_name": "渠道类型", "domain_key": "transaction", "description": "渠道所属类型，例如传统电商、兴趣电商、私域直营。", "source_expression": "order_master.channel_type 或 store_info.channel_type", "related_tables": ["order_master", "store_info"], "keywords": ["渠道类型"], "priority_score": 82, "is_active": 1},
     {"dimension_code": "platform", "dimension_name": "平台", "domain_key": "transaction", "description": "订单来源平台，例如天猫、京东、抖音、小程序。", "source_expression": "order_master.platform", "related_tables": ["order_master"], "keywords": ["平台", "来源平台"], "priority_score": 84, "is_active": 1},
     {"dimension_code": "payment_method", "dimension_name": "支付方式", "domain_key": "transaction", "description": "订单支付方式，例如微信支付、支付宝、银行卡。", "source_expression": "order_master.payment_method", "related_tables": ["order_master"], "keywords": ["支付方式", "微信支付", "支付宝", "银行卡"], "priority_score": 82, "is_active": 1},
-    {"dimension_code": "sales_region", "dimension_name": "销售大区", "domain_key": "store", "description": "门店所在销售大区，例如华东大区、华南大区。", "source_expression": "store_info.sales_region", "related_tables": ["store_info", "order_master"], "keywords": ["销售大区", "大区", "华东", "华南", "华北", "华中", "西南", "西北"], "priority_score": 95, "is_active": 1},
-    {"dimension_code": "store_province", "dimension_name": "省份", "domain_key": "store", "description": "门店或经营区域所在省份。若问题同时出现大区与省份，优先使用该维度。", "source_expression": "store_info.province", "related_tables": ["store_info", "order_master"], "keywords": ["省份", "所在省份", "门店省份", "省区"], "priority_score": 93, "is_active": 1},
-    {"dimension_code": "store_city", "dimension_name": "城市", "domain_key": "store", "description": "门店或经营区域所在城市。", "source_expression": "store_info.city", "related_tables": ["store_info", "order_master"], "keywords": ["城市", "所在城市", "门店城市"], "priority_score": 84, "is_active": 1},
-    {"dimension_code": "store_district", "dimension_name": "门店区县", "domain_key": "store", "description": "门店所在区县或经营片区。", "source_expression": "store_info.district", "related_tables": ["store_info", "order_master"], "keywords": ["门店区县", "区县", "片区"], "priority_score": 78, "is_active": 1},
-    {"dimension_code": "store_name", "dimension_name": "门店名称", "domain_key": "store", "description": "门店或店铺名称。", "source_expression": "store_info.store_name", "related_tables": ["store_info", "order_master"], "keywords": ["门店", "店铺", "门店名称"], "priority_score": 88, "is_active": 1},
-    {"dimension_code": "store_type", "dimension_name": "门店类型", "domain_key": "store", "description": "门店经营类型，例如直营门店、经销门店、社区前置仓。", "source_expression": "store_info.store_type", "related_tables": ["store_info", "order_master"], "keywords": ["门店类型", "店型", "直营门店", "经销门店"], "priority_score": 83, "is_active": 1},
-    {"dimension_code": "org_level_1", "dimension_name": "一级组织", "domain_key": "store", "description": "门店所属一级组织，用于区域组织经营分析。", "source_expression": "store_info.org_level_1", "related_tables": ["store_info", "order_master"], "keywords": ["一级组织", "组织", "销售中心"], "priority_score": 79, "is_active": 1},
+    {"dimension_code": "sales_region", "dimension_name": "销售大区", "domain_key": "store", "description": "门店所在销售大区，例如华东大区、华南大区。", "source_expression": "store_info.sales_region", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["销售大区", "大区", "华东", "华南", "华北", "华中", "西南", "西北"], "priority_score": 95, "is_active": 1},
+    {"dimension_code": "store_province", "dimension_name": "省份", "domain_key": "store", "description": "门店或经营区域所在省份。若问题同时出现大区与省份，优先使用该维度。", "source_expression": "store_info.province", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["省份", "所在省份", "门店省份", "省区"], "priority_score": 93, "is_active": 1},
+    {"dimension_code": "store_city", "dimension_name": "城市", "domain_key": "store", "description": "门店或经营区域所在城市。", "source_expression": "store_info.city", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["城市", "所在城市", "门店城市"], "priority_score": 84, "is_active": 1},
+    {"dimension_code": "store_district", "dimension_name": "门店区县", "domain_key": "store", "description": "门店所在区县或经营片区。", "source_expression": "store_info.district", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["门店区县", "区县", "片区"], "priority_score": 78, "is_active": 1},
+    {"dimension_code": "store_name", "dimension_name": "门店名称", "domain_key": "store", "description": "门店或店铺名称。", "source_expression": "store_info.store_name", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["门店", "店铺", "门店名称"], "priority_score": 88, "is_active": 1},
+    {"dimension_code": "store_type", "dimension_name": "门店类型", "domain_key": "store", "description": "门店经营类型，例如直营门店、经销门店、社区前置仓。", "source_expression": "store_info.store_type", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["门店类型", "店型", "直营门店", "经销门店"], "priority_score": 83, "is_active": 1},
+    {"dimension_code": "org_level_1", "dimension_name": "一级组织", "domain_key": "store", "description": "门店所属一级组织，用于区域组织经营分析。", "source_expression": "store_info.org_level_1", "related_tables": ["store_info", "order_master", "inventory_stock"], "keywords": ["一级组织", "组织", "销售中心"], "priority_score": 79, "is_active": 1},
+    {"dimension_code": "inventory_snapshot_date", "dimension_name": "快照日期", "domain_key": "inventory", "description": "库存快照日期。", "source_expression": "inventory_stock.snapshot_date", "related_tables": ["inventory_stock"], "keywords": ["快照日期", "库存日期", "库存快照"], "priority_score": 80, "is_active": 1},
+    {"dimension_code": "warehouse_name", "dimension_name": "仓库名称", "domain_key": "inventory", "description": "库存所在仓库名称。", "source_expression": "inventory_stock.warehouse_name", "related_tables": ["inventory_stock"], "keywords": ["仓库", "仓库名称"], "priority_score": 82, "is_active": 1},
+    {"dimension_code": "warehouse_type", "dimension_name": "仓库类型", "domain_key": "inventory", "description": "库存所在仓库类型，例如电商仓、门店仓、前置仓、冷冻仓。", "source_expression": "inventory_stock.warehouse_type", "related_tables": ["inventory_stock"], "keywords": ["仓库类型", "电商仓", "门店仓", "前置仓", "冷冻仓"], "priority_score": 79, "is_active": 1},
+    {"dimension_code": "stock_status", "dimension_name": "库存状态", "domain_key": "inventory", "description": "库存状态，例如正常、预警、缺货、滞销。", "source_expression": "inventory_stock.stock_status", "related_tables": ["inventory_stock"], "keywords": ["库存状态", "预警", "缺货", "滞销"], "priority_score": 84, "is_active": 1},
     {"dimension_code": "receiver_province", "dimension_name": "收货省份", "domain_key": "transaction", "description": "订单收货地址中的省份。", "source_expression": "order_master.receiver_province", "related_tables": ["order_master"], "keywords": ["省份", "收货省份", "地区", "河南", "江苏", "浙江", "广东"], "priority_score": 90, "is_active": 1},
     {"dimension_code": "receiver_city", "dimension_name": "收货城市", "domain_key": "transaction", "description": "订单收货地址中的城市。", "source_expression": "order_master.receiver_city", "related_tables": ["order_master"], "keywords": ["城市", "收货城市"], "priority_score": 82, "is_active": 1},
     {"dimension_code": "receiver_district", "dimension_name": "收货区县", "domain_key": "transaction", "description": "订单收货地址中的区县。", "source_expression": "order_master.receiver_district", "related_tables": ["order_master"], "keywords": ["收货区县", "收货区域"], "priority_score": 75, "is_active": 1},
@@ -576,10 +663,10 @@ DEFAULT_DIMENSIONS = [
     {"dimension_code": "order_date", "dimension_name": "下单日期", "domain_key": "transaction", "description": "订单创建日期。", "source_expression": "DATE(order_master.created_at)", "related_tables": ["order_master"], "keywords": ["下单日期", "按天", "按日", "时间", "日期"], "priority_score": 87, "is_active": 1},
     {"dimension_code": "order_week", "dimension_name": "下单周", "domain_key": "transaction", "description": "订单创建所属周。", "source_expression": "YEARWEEK(order_master.created_at, 1)", "related_tables": ["order_master"], "keywords": ["按周", "周"], "priority_score": 76, "is_active": 1},
     {"dimension_code": "order_month", "dimension_name": "下单月", "domain_key": "transaction", "description": "订单创建所属月份。", "source_expression": "DATE_FORMAT(order_master.created_at, '%Y-%m')", "related_tables": ["order_master"], "keywords": ["按月", "月"], "priority_score": 78, "is_active": 1},
-    {"dimension_code": "brand_name", "dimension_name": "品牌", "domain_key": "product", "description": "产品品牌名称。", "source_expression": "order_detail.brand_name 或 product_info.brand_name", "related_tables": ["order_detail", "product_info", "order_master"], "keywords": ["品牌", "特仑苏", "纯甄", "真果粒", "未来星", "冠益乳", "每日鲜语", "蒂兰圣雪", "蒙牛"], "priority_score": 96, "is_active": 1},
-    {"dimension_code": "product_name", "dimension_name": "产品名称", "domain_key": "product", "description": "订单明细或产品维表中的产品名称。", "source_expression": "order_detail.product_name 或 product_info.product_name", "related_tables": ["order_detail", "product_info", "order_master"], "keywords": ["产品名称", "商品名称", "sku", "单品"], "priority_score": 89, "is_active": 1},
-    {"dimension_code": "category_l1", "dimension_name": "一级品类", "domain_key": "product", "description": "产品一级品类。", "source_expression": "order_detail.category_l1 或 product_info.category_l1", "related_tables": ["order_detail", "product_info", "order_master"], "keywords": ["一级品类", "品类"], "priority_score": 86, "is_active": 1},
-    {"dimension_code": "category_l2", "dimension_name": "二级品类", "domain_key": "product", "description": "产品二级品类。", "source_expression": "order_detail.category_l2 或 product_info.category_l2", "related_tables": ["order_detail", "product_info", "order_master"], "keywords": ["二级品类", "品类明细"], "priority_score": 84, "is_active": 1},
+    {"dimension_code": "brand_name", "dimension_name": "品牌", "domain_key": "product", "description": "产品品牌名称。", "source_expression": "order_detail.brand_name 或 product_info.brand_name", "related_tables": ["order_detail", "product_info", "order_master", "inventory_stock"], "keywords": ["品牌", "特仑苏", "纯甄", "真果粒", "未来星", "冠益乳", "每日鲜语", "蒂兰圣雪", "蒙牛"], "priority_score": 96, "is_active": 1},
+    {"dimension_code": "product_name", "dimension_name": "产品名称", "domain_key": "product", "description": "订单明细或产品维表中的产品名称。", "source_expression": "order_detail.product_name 或 product_info.product_name", "related_tables": ["order_detail", "product_info", "order_master", "inventory_stock"], "keywords": ["产品名称", "商品名称", "sku", "单品"], "priority_score": 89, "is_active": 1},
+    {"dimension_code": "category_l1", "dimension_name": "一级品类", "domain_key": "product", "description": "产品一级品类。", "source_expression": "order_detail.category_l1 或 product_info.category_l1", "related_tables": ["order_detail", "product_info", "order_master", "inventory_stock"], "keywords": ["一级品类", "品类"], "priority_score": 86, "is_active": 1},
+    {"dimension_code": "category_l2", "dimension_name": "二级品类", "domain_key": "product", "description": "产品二级品类。", "source_expression": "order_detail.category_l2 或 product_info.category_l2", "related_tables": ["order_detail", "product_info", "order_master", "inventory_stock"], "keywords": ["二级品类", "品类明细"], "priority_score": 84, "is_active": 1},
     {"dimension_code": "gender", "dimension_name": "性别", "domain_key": "user", "description": "用户性别。", "source_expression": "user_info.gender", "related_tables": ["user_info", "order_master"], "keywords": ["性别", "男", "女"], "priority_score": 88, "is_active": 1},
     {"dimension_code": "age", "dimension_name": "年龄", "domain_key": "user", "description": "用户年龄。", "source_expression": "user_info.age", "related_tables": ["user_info", "order_master"], "keywords": ["年龄", "18到25", "25到30"], "priority_score": 82, "is_active": 1},
     {"dimension_code": "city_tier", "dimension_name": "城市等级", "domain_key": "user", "description": "用户常住城市等级，例如一线、新一线、二线。", "source_expression": "user_info.city_tier", "related_tables": ["user_info", "order_master"], "keywords": ["城市等级", "城市层级", "一线城市", "新一线"], "priority_score": 81, "is_active": 1},
@@ -589,8 +676,8 @@ DEFAULT_DIMENSIONS = [
     {"dimension_code": "device_type", "dimension_name": "设备类型", "domain_key": "user", "description": "用户常用设备类型，例如 iOS、Android。", "source_expression": "user_info.device_type", "related_tables": ["user_info", "order_master"], "keywords": ["设备类型", "终端类型", "iOS", "Android"], "priority_score": 73, "is_active": 1},
     {"dimension_code": "refund_reason", "dimension_name": "退款原因", "domain_key": "refund", "description": "退款或售后的原因分类。", "source_expression": "refund_master.refund_reason 或 refund_detail.refund_reason", "related_tables": ["refund_master", "refund_detail"], "keywords": ["退款原因", "售后原因", "包装破损", "配送超时"], "priority_score": 80, "is_active": 1},
     {"dimension_code": "refund_type", "dimension_name": "退款类型", "domain_key": "refund", "description": "退款单据的售后类型，例如仅退款、退货退款。", "source_expression": "refund_master.refund_type", "related_tables": ["refund_master"], "keywords": ["退款类型", "售后类型", "仅退款", "退货退款"], "priority_score": 78, "is_active": 1},
-    {"dimension_code": "target_group", "dimension_name": "目标人群", "domain_key": "product", "description": "产品目标消费人群，例如儿童、家庭、职场白领。", "source_expression": "product_info.target_group", "related_tables": ["product_info", "order_detail", "order_master"], "keywords": ["目标人群", "儿童", "家庭", "白领"], "priority_score": 76, "is_active": 1},
-    {"dimension_code": "temperature_zone", "dimension_name": "温层", "domain_key": "product", "description": "产品温层类型，例如常温、低温、冷冻。", "source_expression": "product_info.temperature_zone", "related_tables": ["product_info", "order_detail", "order_master"], "keywords": ["温层", "常温", "低温", "冷冻"], "priority_score": 75, "is_active": 1},
+    {"dimension_code": "target_group", "dimension_name": "目标人群", "domain_key": "product", "description": "产品目标消费人群，例如儿童、家庭、职场白领。", "source_expression": "product_info.target_group", "related_tables": ["product_info", "order_detail", "order_master", "inventory_stock"], "keywords": ["目标人群", "儿童", "家庭", "白领"], "priority_score": 76, "is_active": 1},
+    {"dimension_code": "temperature_zone", "dimension_name": "温层", "domain_key": "product", "description": "产品温层类型，例如常温、低温、冷冻。", "source_expression": "product_info.temperature_zone", "related_tables": ["product_info", "order_detail", "order_master", "inventory_stock"], "keywords": ["温层", "常温", "低温", "冷冻"], "priority_score": 75, "is_active": 1},
 ]
 
 DEFAULT_JOINS = [
@@ -604,6 +691,8 @@ DEFAULT_JOINS = [
     {"join_code": "refund_detail_master", "domain_key": "refund", "left_table": "refund_detail", "right_table": "refund_master", "join_type": "INNER JOIN", "join_condition": "refund_detail.refund_id = refund_master.refund_id", "description": "退款明细关联退款主表", "keywords": ["退款商品", "退款明细"], "priority_score": 93, "is_active": 1},
     {"join_code": "refund_detail_order_detail", "domain_key": "refund", "left_table": "refund_detail", "right_table": "order_detail", "join_type": "INNER JOIN", "join_condition": "refund_detail.order_detail_id = order_detail.order_detail_id", "description": "退款明细关联订单明细", "keywords": ["退款商品订单明细"], "priority_score": 88, "is_active": 1},
     {"join_code": "refund_detail_product", "domain_key": "refund", "left_table": "refund_detail", "right_table": "product_info", "join_type": "INNER JOIN", "join_condition": "refund_detail.product_id = product_info.product_id", "description": "退款明细关联产品", "keywords": ["退款品牌", "退款品类"], "priority_score": 82, "is_active": 1},
+    {"join_code": "inventory_store", "domain_key": "inventory", "left_table": "inventory_stock", "right_table": "store_info", "join_type": "INNER JOIN", "join_condition": "inventory_stock.store_id = store_info.store_id", "description": "库存快照关联门店", "keywords": ["库存门店", "库存大区"], "priority_score": 92, "is_active": 1},
+    {"join_code": "inventory_product", "domain_key": "inventory", "left_table": "inventory_stock", "right_table": "product_info", "join_type": "INNER JOIN", "join_condition": "inventory_stock.product_id = product_info.product_id", "description": "库存快照关联产品", "keywords": ["库存品牌", "库存品类"], "priority_score": 92, "is_active": 1},
 ]
 
 DEFAULT_SYNONYMS = [
@@ -624,6 +713,12 @@ DEFAULT_SYNONYMS = [
     {"target_type": "metric", "target_key": "discount_rate", "standard_name": "优惠率", "synonym_term": "让利率", "related_tables": ["order_master", "order_detail"], "weight_score": 10, "is_active": 1},
     {"target_type": "metric", "target_key": "avg_selling_price", "standard_name": "平均成交单价", "synonym_term": "平均售价", "related_tables": ["order_detail", "order_master"], "weight_score": 12, "is_active": 1},
     {"target_type": "metric", "target_key": "items_per_order", "standard_name": "单均件数", "synonym_term": "件单量", "related_tables": ["order_master", "order_detail"], "weight_score": 10, "is_active": 1},
+    {"target_type": "metric", "target_key": "on_hand_inventory", "standard_name": "在库量", "synonym_term": "库存量", "related_tables": ["inventory_stock"], "weight_score": 13, "is_active": 1},
+    {"target_type": "metric", "target_key": "available_inventory", "standard_name": "可售库存", "synonym_term": "可用库存", "related_tables": ["inventory_stock"], "weight_score": 14, "is_active": 1},
+    {"target_type": "metric", "target_key": "available_inventory", "standard_name": "可售库存", "synonym_term": "可卖库存", "related_tables": ["inventory_stock"], "weight_score": 12, "is_active": 1},
+    {"target_type": "metric", "target_key": "in_transit_inventory", "standard_name": "在途库存", "synonym_term": "在途量", "related_tables": ["inventory_stock"], "weight_score": 11, "is_active": 1},
+    {"target_type": "metric", "target_key": "inventory_amount", "standard_name": "库存金额", "synonym_term": "库存货值", "related_tables": ["inventory_stock"], "weight_score": 12, "is_active": 1},
+    {"target_type": "metric", "target_key": "stockout_sku_count", "standard_name": "缺货SKU数", "synonym_term": "缺货商品数", "related_tables": ["inventory_stock"], "weight_score": 12, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_region", "standard_name": "销售大区", "synonym_term": "大区", "related_tables": ["store_info", "order_master"], "weight_score": 12, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_region", "standard_name": "销售大区", "synonym_term": "区域", "related_tables": ["store_info", "order_master"], "weight_score": 10, "is_active": 1},
     {"target_type": "dimension", "target_key": "receiver_province", "standard_name": "收货省份", "synonym_term": "地区", "related_tables": ["order_master"], "weight_score": 8, "is_active": 1},
@@ -642,9 +737,13 @@ DEFAULT_SYNONYMS = [
     {"target_type": "dimension", "target_key": "register_channel", "standard_name": "注册渠道", "synonym_term": "拉新渠道", "related_tables": ["user_info", "order_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "target_group", "standard_name": "目标人群", "synonym_term": "人群", "related_tables": ["product_info", "order_detail"], "weight_score": 8, "is_active": 1},
     {"target_type": "dimension", "target_key": "temperature_zone", "standard_name": "温层", "synonym_term": "温区", "related_tables": ["product_info", "order_detail"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "warehouse_name", "standard_name": "仓库名称", "synonym_term": "仓库", "related_tables": ["inventory_stock"], "weight_score": 10, "is_active": 1},
+    {"target_type": "dimension", "target_key": "warehouse_type", "standard_name": "仓库类型", "synonym_term": "仓型", "related_tables": ["inventory_stock"], "weight_score": 8, "is_active": 1},
+    {"target_type": "dimension", "target_key": "stock_status", "standard_name": "库存状态", "synonym_term": "缺货状态", "related_tables": ["inventory_stock"], "weight_score": 9, "is_active": 1},
     {"target_type": "table", "target_key": "refund_master", "standard_name": "退款主表", "synonym_term": "售后主表", "related_tables": ["refund_master"], "weight_score": 8, "is_active": 1},
     {"target_type": "table", "target_key": "order_detail", "standard_name": "订单明细子表", "synonym_term": "订单子表", "related_tables": ["order_detail"], "weight_score": 10, "is_active": 1},
     {"target_type": "table", "target_key": "product_info", "standard_name": "产品信息维度表", "synonym_term": "商品表", "related_tables": ["product_info"], "weight_score": 8, "is_active": 1},
+    {"target_type": "table", "target_key": "inventory_stock", "standard_name": "库存快照表", "synonym_term": "库存表", "related_tables": ["inventory_stock"], "weight_score": 12, "is_active": 1},
     {"target_type": "dimension", "target_key": "sales_channel", "standard_name": "销售渠道", "synonym_term": "销售平台", "related_tables": ["order_master", "order_detail"], "weight_score": 8, "is_active": 1},
 ]
 
@@ -791,6 +890,30 @@ DEFAULT_EXAMPLES = [
         "related_dimensions": ["城市等级"],
         "sql_example": "SELECT ui.city_tier AS 城市等级, COUNT(DISTINCT om.buyer_id) AS 支付买家数, SUM(om.paid_amount) AS 销售金额 FROM order_master om JOIN user_info ui ON om.buyer_id = ui.user_id WHERE om.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND om.order_status IN ('已支付','已发货','已完成','部分退款') GROUP BY ui.city_tier ORDER BY 销售金额 DESC LIMIT 200",
         "priority_score": 84,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_region_brand_inventory",
+        "domain_key": "inventory",
+        "question_text": "按销售大区和品牌统计当前可售库存、在途库存和库存金额",
+        "summary_text": "需要使用库存快照表关联门店和产品维表，按销售大区和品牌分组，统计可售库存、在途库存和库存金额。",
+        "related_tables": ["inventory_stock", "store_info", "product_info"],
+        "related_metrics": ["可售库存", "在途库存", "库存金额"],
+        "related_dimensions": ["销售大区", "品牌"],
+        "sql_example": "SELECT s.sales_region AS 销售大区, p.brand_name AS 品牌, SUM(i.available_qty) AS 可售库存, SUM(i.in_transit_qty) AS 在途库存, SUM(i.inventory_amount) AS 库存金额 FROM inventory_stock i JOIN store_info s ON i.store_id = s.store_id JOIN product_info p ON i.product_id = p.product_id WHERE i.snapshot_date = CURDATE() GROUP BY s.sales_region, p.brand_name ORDER BY 库存金额 DESC LIMIT 200",
+        "priority_score": 92,
+        "is_active": 1,
+    },
+    {
+        "example_key": "ex_channel_stockout_inventory",
+        "domain_key": "inventory",
+        "question_text": "按销售渠道统计当前可售库存和缺货SKU数，按缺货SKU数降序",
+        "summary_text": "需要使用库存快照表，按销售渠道分组，统计可售库存和缺货SKU数。",
+        "related_tables": ["inventory_stock"],
+        "related_metrics": ["可售库存", "缺货SKU数"],
+        "related_dimensions": ["销售渠道"],
+        "sql_example": "SELECT i.sales_channel AS 销售渠道, SUM(i.available_qty) AS 可售库存, COUNT(DISTINCT CASE WHEN i.available_qty <= 0 THEN i.product_id END) AS 缺货SKU数 FROM inventory_stock i WHERE i.snapshot_date = CURDATE() GROUP BY i.sales_channel ORDER BY 缺货SKU数 DESC, 可售库存 ASC LIMIT 200",
+        "priority_score": 90,
         "is_active": 1,
     },
 ]
@@ -990,6 +1113,14 @@ def _json_loads(value: Any) -> list[Any]:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _join_search_lines(parts: list[Any]) -> str:
+    return "\n".join(_safe_text(part) for part in parts)
+
+
+def _join_search_terms(values: list[Any] | None) -> str:
+    return " ".join(_safe_text(value) for value in (values or []) if _safe_text(value))
 
 
 def _bool_int(value: Any) -> int:
@@ -1281,7 +1412,7 @@ def sync_semantic_schema(conn: pymysql.connections.Connection | None = None) -> 
             WHERE c.TABLE_SCHEMA = DATABASE()
               AND c.TABLE_NAME IN (
                   'order_master', 'order_detail', 'user_info', 'product_info',
-                  'store_info', 'refund_master', 'refund_detail'
+                  'store_info', 'refund_master', 'refund_detail', 'inventory_stock'
               )
             ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
             """
@@ -1403,17 +1534,17 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         key_fields = []
         for column in column_map.get(table["table_name"], [])[:10]:
             key_fields.append(f"{column['column_name']}({column.get('business_name') or column.get('column_comment') or column['column_name']})")
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 table["table_name"],
                 table["business_name"],
                 table.get("table_role", ""),
                 table.get("description", ""),
                 table.get("table_comment", ""),
-                " ".join(table.get("keywords", [])),
-                " ".join(table.get("business_dimensions", [])),
-                " ".join(table.get("business_metrics", [])),
-                " ".join(key_fields),
+                _join_search_terms(table.get("keywords", [])),
+                _join_search_terms(table.get("business_dimensions", [])),
+                _join_search_terms(table.get("business_metrics", [])),
+                _join_search_terms(key_fields),
             ]
         )
         docs.append(
@@ -1437,7 +1568,7 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         )
 
     for metric in entities["metrics"]:
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 metric["metric_code"],
                 metric["metric_name"],
@@ -1445,8 +1576,8 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
                 metric.get("description", ""),
                 metric.get("default_expression", ""),
                 metric.get("default_filters", ""),
-                " ".join(metric.get("keywords", [])),
-                " ".join(metric.get("related_tables", [])),
+                _join_search_terms(metric.get("keywords", [])),
+                _join_search_terms(metric.get("related_tables", [])),
             ]
         )
         docs.append(
@@ -1465,14 +1596,14 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         )
 
     for dimension in entities["dimensions"]:
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 dimension["dimension_code"],
                 dimension["dimension_name"],
                 dimension.get("description", ""),
                 dimension.get("source_expression", ""),
-                " ".join(dimension.get("keywords", [])),
-                " ".join(dimension.get("related_tables", [])),
+                _join_search_terms(dimension.get("keywords", [])),
+                _join_search_terms(dimension.get("related_tables", [])),
             ]
         )
         docs.append(
@@ -1491,14 +1622,14 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         )
 
     for join in entities["joins"]:
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 join["join_code"],
                 join.get("description", ""),
                 join.get("join_condition", ""),
                 join["left_table"],
                 join["right_table"],
-                " ".join(join.get("keywords", [])),
+                _join_search_terms(join.get("keywords", [])),
             ]
         )
         docs.append(
@@ -1517,13 +1648,13 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         )
 
     for synonym in entities["synonyms"]:
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 synonym["standard_name"],
                 synonym["synonym_term"],
                 synonym["target_type"],
                 synonym["target_key"],
-                " ".join(synonym.get("related_tables", [])),
+                _join_search_terms(synonym.get("related_tables", [])),
             ]
         )
         docs.append(
@@ -1542,13 +1673,13 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
         )
 
     for example in entities["examples"]:
-        search_text = "\n".join(
+        search_text = _join_search_lines(
             [
                 example["question_text"],
                 example.get("summary_text", ""),
-                " ".join(example.get("related_tables", [])),
-                " ".join(example.get("related_metrics", [])),
-                " ".join(example.get("related_dimensions", [])),
+                _join_search_terms(example.get("related_tables", [])),
+                _join_search_terms(example.get("related_metrics", [])),
+                _join_search_terms(example.get("related_dimensions", [])),
                 example.get("sql_example", ""),
             ]
         )

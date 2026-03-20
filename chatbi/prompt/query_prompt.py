@@ -24,7 +24,7 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '4) dimensions、metrics 必须返回中文业务名称；sql 输出列别名尽量与其一致。'
         '5) 只有用户明确要求按某维度拆分时才 GROUP BY；否则返回整体汇总。'
         '6) 排名、TOP、前N 未给排序指标时先澄清。'
-        '7) 销售/订单分析优先 order_master；品牌/产品/品类/SKU 分析优先 order_detail；用户属性优先 user_info；门店和区域优先 store_info；退款优先 refund_master 或 refund_detail。'
+        '7) 销售/订单分析优先 order_master；品牌/产品/品类/SKU 分析优先 order_detail；用户属性优先 user_info；门店和区域优先 store_info；退款优先 refund_master 或 refund_detail；库存分析优先 inventory_stock。'
         '8) 若问销售金额、销量、GMV且未指定状态，默认统计 已支付、已发货、已完成、部分退款。'
         '9) 商品粒度销售金额必须用 order_detail.line_paid_amount 或 line_gross_amount；只要涉及品牌、产品、品类、SKU 分析或这些条件过滤，退款金额和退款率必须优先走 refund_detail 口径，并通过 order_detail 关联，禁止直接把 refund_master.order_id 级退款金额分摊到商品粒度。'
         '10) 下单日期只能用 created_at 或 DATE(order_master.created_at)，禁止使用 order_date、pay_date、ship_date 等虚拟列。'
@@ -32,7 +32,8 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '12) SQL 必须兼容 MySQL 8；中文别名请使用反引号或裸别名，禁止使用双引号引用标识符。'
         '13) 日期区间优先使用 DATE_SUB、DATE_ADD、DATE() 等 MySQL 常见写法。'
         '14) 只能使用候选语义层里真实出现的表、字段和关联关系；sql 只能是 SELECT 或 WITH；未限制条数时默认 LIMIT 200。'
-        '15) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
+        '15) 库存问题若未明确时间范围，默认使用最新快照；可售库存使用 available_qty，在库量使用 on_hand_qty，在途库存使用 in_transit_qty，库存金额使用 inventory_amount，缺货SKU数使用 available_qty <= 0 的去重 product_id。'
+        '16) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
     )
     user_prompt = semantic_prompt_text
     if history_text and history_text.strip() not in {'无', '无历史对话'}:

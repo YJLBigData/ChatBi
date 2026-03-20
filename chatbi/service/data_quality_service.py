@@ -6,6 +6,7 @@ from typing import Any
 
 from chatbi.domain.geo_catalog import city_meta, city_names, province_meta, province_names
 from chatbi.domain.product_catalog import allowed_brand_names, allowed_product_names, catalog_rows_by_sku
+from chatbi.service.inventory_service import INVENTORY_STATUSES, ensure_inventory_runtime
 from chatbi.repository.db import ensure_table_columns
 
 
@@ -73,6 +74,7 @@ def ensure_data_quality_runtime(conn) -> None:
         cursor.execute(DATA_QUALITY_ISSUE_DDL)
         for table_name, migrations in BUSINESS_TABLE_MIGRATIONS.items():
             ensure_table_columns(cursor, table_name, migrations)
+    ensure_inventory_runtime(conn)
 
 
 def _pick_district(city: str, row_id: int) -> str:
@@ -503,7 +505,9 @@ def run_data_quality_audit(conn, run_type: str = "runtime", auto_fix: bool = Tru
                         (SELECT COUNT(*) FROM `order_master` o LEFT JOIN `user_info` u ON o.`buyer_id`=u.`user_id` WHERE u.`user_id` IS NULL) +
                         (SELECT COUNT(*) FROM `order_detail` d LEFT JOIN `order_master` o ON d.`order_id`=o.`order_id` WHERE o.`order_id` IS NULL) +
                         (SELECT COUNT(*) FROM `refund_master` r LEFT JOIN `order_master` o ON r.`order_id`=o.`order_id` WHERE o.`order_id` IS NULL) +
-                        (SELECT COUNT(*) FROM `refund_detail` d LEFT JOIN `refund_master` r ON d.`refund_id`=r.`refund_id` WHERE r.`refund_id` IS NULL)
+                        (SELECT COUNT(*) FROM `refund_detail` d LEFT JOIN `refund_master` r ON d.`refund_id`=r.`refund_id` WHERE r.`refund_id` IS NULL) +
+                        (SELECT COUNT(*) FROM `inventory_stock` i LEFT JOIN `store_info` s ON i.`store_id`=s.`store_id` WHERE s.`store_id` IS NULL) +
+                        (SELECT COUNT(*) FROM `inventory_stock` i LEFT JOIN `product_info` p ON i.`product_id`=p.`product_id` WHERE p.`product_id` IS NULL)
                     ) AS cnt,
                     NULL AS sample_value
                 """,
@@ -519,17 +523,39 @@ def run_data_quality_audit(conn, run_type: str = "runtime", auto_fix: bool = Tru
                         (SELECT COUNT(*) FROM `order_master` WHERE `paid_amount` < 0 OR `gross_amount` < 0 OR `discount_amount` < 0) +
                         (SELECT COUNT(*) FROM `order_detail` WHERE `quantity` <= 0 OR `line_paid_amount` < 0 OR `line_gross_amount` < 0) +
                         (SELECT COUNT(*) FROM `refund_master` WHERE `refund_amount` < 0) +
-                        (SELECT COUNT(*) FROM `refund_detail` WHERE `refund_quantity` <= 0 OR `refund_amount` < 0)
+                        (SELECT COUNT(*) FROM `refund_detail` WHERE `refund_quantity` <= 0 OR `refund_amount` < 0) +
+                        (SELECT COUNT(*) FROM `inventory_stock` WHERE `on_hand_qty` < 0 OR `reserved_qty` < 0 OR `available_qty` < 0 OR `in_transit_qty` < 0 OR `safety_stock_qty` < 0 OR `damaged_qty` < 0 OR `inventory_amount` < 0)
                     ) AS cnt,
                     NULL AS sample_value
                 """,
                 "存在负数金额或非法件数。",
+            ),
+            (
+                "inventory_qty_inconsistent",
+                "high",
+                "inventory_stock",
+                """
+                SELECT COUNT(*) AS cnt, MIN(CONCAT(`inventory_id`, ':', `available_qty`)) AS sample_value
+                FROM `inventory_stock`
+                WHERE `available_qty` <> GREATEST(`on_hand_qty` - `reserved_qty` - `damaged_qty`, 0)
+                """,
+                "库存表可售库存与在库/预占/残损的关系不一致。",
+            ),
+            (
+                "inventory_status_invalid",
+                "medium",
+                "inventory_stock",
+                "SELECT COUNT(*) AS cnt, MIN(`stock_status`) AS sample_value FROM `inventory_stock` WHERE `stock_status` NOT IN ({})".format(
+                    ", ".join(["%s"] * len(INVENTORY_STATUSES))
+                ),
+                "库存状态不在企业约定枚举内。",
             ),
         ]
         issue_params_map = {
             "product_info_non_mengniu_name": tuple(sorted(ALLOWED_PRODUCT_NAMES)) + tuple(sorted(ALLOWED_BRAND_NAMES)),
             "order_detail_non_mengniu_name": tuple(sorted(ALLOWED_PRODUCT_NAMES)) + tuple(sorted(ALLOWED_BRAND_NAMES)),
             "refund_detail_non_mengniu_name": tuple(sorted(ALLOWED_PRODUCT_NAMES)),
+            "inventory_status_invalid": tuple(INVENTORY_STATUSES),
         }
         for issue_key, severity, affected_table, sql, message in checks:
             params = issue_params_map.get(issue_key)
@@ -576,6 +602,7 @@ def run_data_quality_audit(conn, run_type: str = "runtime", auto_fix: bool = Tru
             "generic_district_policy": "统一按城市映射到真实区县列表，订单和门店不再保留占位区县。",
             "geo_code_policy": "用户、门店、订单收货地统一补全省市编码。",
             "product_catalog_policy": "产品主数据、订单明细快照、退款明细快照统一约束为蒙牛产品白名单，不允许出现“其他”或非蒙牛商品名。",
+            "inventory_policy": "库存按门店×商品生成快照，统一维护在库、预占、可售、在途、安全库存、库存金额和库存状态口径。",
         }
         cursor.execute(
             """
