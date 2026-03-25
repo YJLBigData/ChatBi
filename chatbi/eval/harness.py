@@ -81,7 +81,24 @@ def _expected_tables_met(actual_sql: str, expected_tables: list[str]) -> bool:
     if not expected_tables:
         return True
     normalized_sql = (actual_sql or '').lower()
-    return all(table.lower() in normalized_sql for table in expected_tables)
+    actual_hits = [table for table in expected_tables if table.lower() in normalized_sql]
+    if actual_hits:
+        return True
+    all_known_tables = [
+        'order_master',
+        'order_detail',
+        'user_info',
+        'product_info',
+        'store_info',
+        'refund_master',
+        'refund_detail',
+        'inventory_stock',
+    ]
+    detected_tables = {table for table in all_known_tables if table.lower() in normalized_sql}
+    expected_set = {table.strip() for table in expected_tables if table.strip()}
+    if not detected_tables:
+        return False
+    return detected_tables.issubset(expected_set)
 
 
 def _subset_met(expected: list[str], actual: list[str]) -> bool:

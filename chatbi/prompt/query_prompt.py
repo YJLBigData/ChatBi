@@ -10,7 +10,7 @@ def _compact_prompt_error(error_message: str) -> str:
     return ' '.join(str(error_message or '').split())
 
 
-def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, question: str) -> tuple[str, str]:
+def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, question: str, security_note: str = '') -> tuple[str, str]:
     system_prompt = (
         '你是 ChatBI 查询规划助手。'
         f'今天日期是 {TODAY_STR}。'
@@ -36,13 +36,15 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '16) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
     )
     user_prompt = semantic_prompt_text
+    if security_note:
+        user_prompt += f"\n\n安全与路由说明:\n{security_note}"
     if history_text and history_text.strip() not in {'无', '无历史对话'}:
         user_prompt += f"\n\n历史对话:\n{history_text}"
     user_prompt += f"\n\n当前用户问题: {question}"
     return system_prompt, user_prompt
 
 
-def build_sql_repair_prompts(semantic_prompt_text: str, history_text: str, question: str, failed_sql: str, error_message: str) -> tuple[str, str]:
+def build_sql_repair_prompts(semantic_prompt_text: str, history_text: str, question: str, failed_sql: str, error_message: str, security_note: str = '') -> tuple[str, str]:
     system_prompt = (
         '你是 MySQL SQL 修复助手。'
         '只基于候选语义层、历史对话、当前问题、失败 SQL 和 MySQL 报错做最小修复。'
@@ -56,6 +58,8 @@ def build_sql_repair_prompts(semantic_prompt_text: str, history_text: str, quest
         '5) 只做必要修改，保留原业务意图。'
     )
     user_prompt = semantic_prompt_text
+    if security_note:
+        user_prompt += f"\n\n安全与路由说明:\n{security_note}"
     if history_text and history_text.strip() not in {'无', '无历史对话'}:
         user_prompt += f"\n\n历史对话:\n{history_text}"
     compact_failed_sql = _compact_prompt_sql(failed_sql)

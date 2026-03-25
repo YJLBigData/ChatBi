@@ -6,7 +6,14 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file, g
 
-from chatbi.config import LLM_PROVIDER_OPTIONS, TASK_QUEUE_WARNING_SECONDS, TASK_TYPE_REPORT_GENERATE, TASK_TYPE_SEMANTIC_REBUILD
+from chatbi.config import (
+    LLM_DUAL_PROVIDER_OPTIONS,
+    LLM_PROVIDER_OPTIONS,
+    LLM_SINGLE_PROVIDER_OPTIONS,
+    TASK_QUEUE_WARNING_SECONDS,
+    TASK_TYPE_REPORT_GENERATE,
+    TASK_TYPE_SEMANTIC_REBUILD,
+)
 from chatbi.logging_setup import configure_logging
 from chatbi.repository.chat_repository import normalize_conversation_id
 from chatbi.repository.task_repository import list_llm_invocation_logs
@@ -122,7 +129,7 @@ def build_task_queue_warning(tasks: list[dict[str, Any]]) -> str:
         except ValueError:
             continue
         if (now - created_time).total_seconds() >= TASK_QUEUE_WARNING_SECONDS:
-            return '检测到任务持续排队，当前没有任务被 worker 消费。请检查 worker.py、systemd 或 supervisor 是否正在运行。'
+            return '检测到任务持续排队，当前没有任务被 worker 消费。请检查 worker.py、launchd、systemd 或 supervisor 是否正在运行。'
     return ''
 
 
@@ -132,6 +139,8 @@ def index() -> str:
         'index.html',
         default_llm_provider=DEFAULT_PROVIDER,
         llm_provider_options=LLM_PROVIDER_OPTIONS,
+        llm_single_provider_options=LLM_SINGLE_PROVIDER_OPTIONS,
+        llm_dual_provider_options=LLM_DUAL_PROVIDER_OPTIONS,
     )
 
 

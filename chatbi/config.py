@@ -21,6 +21,12 @@ DASHSCOPE_EMBEDDING_MODEL = os.getenv('DASHSCOPE_EMBEDDING_MODEL', 'text-embeddi
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
 DEEPSEEK_BASE_URL = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
 DEEPSEEK_MODEL = os.getenv('DEEPSEEK_MODEL', 'deepseek-reasoner')
+OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen3:8b')
+OLLAMA_REQUEST_TIMEOUT_SECONDS = int(os.getenv('OLLAMA_REQUEST_TIMEOUT_SECONDS', '180'))
+EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'auto')
+LOCAL_EMBEDDING_BASE_URL = os.getenv('LOCAL_EMBEDDING_BASE_URL', 'http://127.0.0.1:8000/v1')
+LOCAL_EMBEDDING_MODEL = os.getenv('LOCAL_EMBEDDING_MODEL', 'qwen3-embed-4b')
 DEFAULT_LLM_PROVIDER = os.getenv('DEFAULT_LLM_PROVIDER', 'bailian')
 
 MAX_RESULT_ROWS = int(os.getenv('MAX_RESULT_ROWS', '200'))
@@ -38,6 +44,9 @@ LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv('LLM_REQUEST_TIMEOUT_SECONDS', '90')
 REPORT_PREVIEW_MAX_ROWS = int(os.getenv('REPORT_PREVIEW_MAX_ROWS', '12'))
 SEMANTIC_VECTOR_TOPK = int(os.getenv('SEMANTIC_VECTOR_TOPK', '12'))
 SEMANTIC_FULLTEXT_TOPK = int(os.getenv('SEMANTIC_FULLTEXT_TOPK', '12'))
+SEMANTIC_RERANK_TOPK = int(os.getenv('SEMANTIC_RERANK_TOPK', '18'))
+SEMANTIC_RERANK_FINAL_N = int(os.getenv('SEMANTIC_RERANK_FINAL_N', '10'))
+KNOWLEDGE_CONTEXT_TOPN = int(os.getenv('KNOWLEDGE_CONTEXT_TOPN', '3'))
 TASK_POLL_LIMIT = int(os.getenv('TASK_POLL_LIMIT', '30'))
 TASK_WORKER_POLL_INTERVAL_SECONDS = float(os.getenv('TASK_WORKER_POLL_INTERVAL_SECONDS', '2'))
 TASK_LEASE_SECONDS = int(os.getenv('TASK_LEASE_SECONDS', '900'))
@@ -48,6 +57,7 @@ LOG_DIR = os.getenv('LOG_DIR', 'logs')
 LOG_FILE_MAX_BYTES = int(os.getenv('LOG_FILE_MAX_BYTES', str(50 * 1024 * 1024)))
 LOG_FILE_BACKUP_COUNT = int(os.getenv('LOG_FILE_BACKUP_COUNT', '8'))
 LOG_TOTAL_MAX_BYTES = int(os.getenv('LOG_TOTAL_MAX_BYTES', str(1024 * 1024 * 1024)))
+EVAL_DATASET_PATH = os.getenv('EVAL_DATASET_PATH', 'chatbi/evals/chatbi_eval_cases.jsonl')
 
 ALLOWED_BASE_TABLES = {
     'order_master',
@@ -64,7 +74,7 @@ TODAY_STR = date.today().isoformat()
 CONTEXT_STRATEGY_LABEL = '滚动摘要 + 最近窗口'
 RUNTIME_BOOTSTRAP_LOCK_NAME = 'chatbi_runtime_bootstrap'
 
-LLM_PROVIDER_CONFIGS = {
+BASE_LLM_PROVIDER_CONFIGS = {
     'bailian': {
         'label': '阿里百炼',
         'api_key': DASHSCOPE_API_KEY,
@@ -79,6 +89,13 @@ LLM_PROVIDER_CONFIGS = {
         'model': DEEPSEEK_MODEL,
         'max_input_tokens': 128000,
     },
+    'local': {
+        'label': '本地模型',
+        'api_key': 'local',
+        'base_url': OLLAMA_BASE_URL,
+        'model': OLLAMA_MODEL,
+        'max_input_tokens': 32000,
+    },
 }
 
 LLM_PROVIDER_ALIASES = {
@@ -88,11 +105,74 @@ LLM_PROVIDER_ALIASES = {
     'qwen': 'bailian',
     'deepseek': 'deepseek',
     'ds': 'deepseek',
+    'local': 'local',
+    'ollama': 'local',
+    'hybrid_bailian': 'local_bailian',
+    'hybrid_deepseek': 'local_deepseek',
+    'local+bailian': 'local_bailian',
+    'local_bailian': 'local_bailian',
+    'local+deepseek': 'local_deepseek',
+    'local_deepseek': 'local_deepseek',
+}
+
+LLM_PROVIDER_CONFIGS = {
+    'bailian': {
+        **BASE_LLM_PROVIDER_CONFIGS['bailian'],
+        'mode': 'single',
+        'online_provider': 'bailian',
+        'local_provider': None,
+    },
+    'deepseek': {
+        **BASE_LLM_PROVIDER_CONFIGS['deepseek'],
+        'mode': 'single',
+        'online_provider': 'deepseek',
+        'local_provider': None,
+    },
+    'local': {
+        **BASE_LLM_PROVIDER_CONFIGS['local'],
+        'mode': 'single',
+        'online_provider': None,
+        'local_provider': 'local',
+    },
+    'local_bailian': {
+        'label': '本地模型 + 阿里百炼',
+        'api_key': BASE_LLM_PROVIDER_CONFIGS['bailian']['api_key'],
+        'base_url': BASE_LLM_PROVIDER_CONFIGS['bailian']['base_url'],
+        'model': f"{OLLAMA_MODEL} + {DASHSCOPE_MODEL}",
+        'max_input_tokens': BASE_LLM_PROVIDER_CONFIGS['bailian']['max_input_tokens'],
+        'mode': 'hybrid',
+        'online_provider': 'bailian',
+        'local_provider': 'local',
+    },
+    'local_deepseek': {
+        'label': '本地模型 + DeepSeek',
+        'api_key': BASE_LLM_PROVIDER_CONFIGS['deepseek']['api_key'],
+        'base_url': BASE_LLM_PROVIDER_CONFIGS['deepseek']['base_url'],
+        'model': f"{OLLAMA_MODEL} + {DEEPSEEK_MODEL}",
+        'max_input_tokens': BASE_LLM_PROVIDER_CONFIGS['deepseek']['max_input_tokens'],
+        'mode': 'hybrid',
+        'online_provider': 'deepseek',
+        'local_provider': 'local',
+    },
 }
 
 LLM_PROVIDER_OPTIONS = [
+    {'value': 'local', 'label': '单引擎：本地模型', 'model': OLLAMA_MODEL},
+    {'value': 'bailian', 'label': '单引擎：阿里百炼', 'model': DASHSCOPE_MODEL},
+    {'value': 'deepseek', 'label': '单引擎：DeepSeek', 'model': DEEPSEEK_MODEL},
+    {'value': 'local_bailian', 'label': '双引擎：本地模型 + 阿里百炼', 'model': f'{OLLAMA_MODEL} + {DASHSCOPE_MODEL}'},
+    {'value': 'local_deepseek', 'label': '双引擎：本地模型 + DeepSeek', 'model': f'{OLLAMA_MODEL} + {DEEPSEEK_MODEL}'},
+]
+
+LLM_SINGLE_PROVIDER_OPTIONS = [
+    {'value': 'local', 'label': '本地模型', 'model': OLLAMA_MODEL},
     {'value': 'bailian', 'label': '阿里百炼', 'model': DASHSCOPE_MODEL},
     {'value': 'deepseek', 'label': 'DeepSeek', 'model': DEEPSEEK_MODEL},
+]
+
+LLM_DUAL_PROVIDER_OPTIONS = [
+    {'value': 'local_bailian', 'label': '本地模型 + 阿里百炼', 'model': f'{OLLAMA_MODEL} + {DASHSCOPE_MODEL}'},
+    {'value': 'local_deepseek', 'label': '本地模型 + DeepSeek', 'model': f'{OLLAMA_MODEL} + {DEEPSEEK_MODEL}'},
 ]
 
 TASK_TYPE_REPORT_GENERATE = 'report_generate'

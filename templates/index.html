@@ -142,6 +142,32 @@
             outline: none;
         }
 
+        .provider-mode-group {
+            display: inline-flex;
+            gap: 8px;
+            background: #f8fafc;
+            padding: 4px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .provider-mode-btn {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            padding: 8px 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .provider-mode-btn.active {
+            background: #fff;
+            color: var(--primary);
+            box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+        }
+
         .report-toolbar {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -842,11 +868,13 @@
         <h3>输入问题</h3>
         <textarea id="question" placeholder="示例：按销售大区统计近30天销售金额和订单数，按销售金额降序"></textarea>
         <div class="engine-row">
+            <label>模型模式</label>
+            <div class="provider-mode-group" role="group" aria-label="模型模式选择">
+                <button id="singleModeBtn" class="provider-mode-btn active" type="button" data-mode="single">单引擎</button>
+                <button id="dualModeBtn" class="provider-mode-btn" type="button" data-mode="dual">双引擎</button>
+            </div>
             <label for="llmProvider">模型引擎</label>
             <select id="llmProvider">
-                {% for option in llm_provider_options %}
-                <option value="{{ option.value }}">{{ option.label }} / {{ option.model }}</option>
-                {% endfor %}
             </select>
         </div>
         <div id="timeRangeRow" class="time-range-row">
@@ -1006,6 +1034,8 @@
     const timeRangeStartEl = document.getElementById('timeRangeStart');
     const timeRangeEndEl = document.getElementById('timeRangeEnd');
     const llmProviderSelect = document.getElementById('llmProvider');
+    const singleModeBtn = document.getElementById('singleModeBtn');
+    const dualModeBtn = document.getElementById('dualModeBtn');
     const reportTemplateSelect = document.getElementById('reportTemplateSelect');
     const templateSampleFormatSelect = document.getElementById('templateSampleFormatSelect');
     const downloadDataBtn = document.getElementById('downloadDataBtn');
@@ -1032,8 +1062,11 @@
     const CHART_COLORS = ['#1f6feb', '#0ea5e9', '#0a7f47', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#84cc16', '#e11d48', '#06b6d4', '#4f46e5'];
     const CONVERSATION_STORAGE_KEY = 'chatbi_conversation_id';
     const LLM_PROVIDER_STORAGE_KEY = 'chatbi_llm_provider';
+    const LLM_PROVIDER_MODE_STORAGE_KEY = 'chatbi_llm_provider_mode';
     const CLIENT_ID_STORAGE_KEY = 'chatbi_client_id';
     const DEFAULT_LLM_PROVIDER = {{ default_llm_provider|tojson }};
+    const SINGLE_PROVIDER_OPTIONS = {{ llm_single_provider_options|tojson }};
+    const DUAL_PROVIDER_OPTIONS = {{ llm_dual_provider_options|tojson }};
 
     let conversationId = loadConversationId();
     let clientId = loadClientId();
@@ -1107,8 +1140,37 @@
         return window.localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) || DEFAULT_LLM_PROVIDER;
     }
 
+    function loadLlmProviderMode() {
+        return window.localStorage.getItem(LLM_PROVIDER_MODE_STORAGE_KEY) || (String(DEFAULT_LLM_PROVIDER).startsWith('local_') ? 'dual' : 'single');
+    }
+
     function persistLlmProvider(provider) {
         window.localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, provider);
+    }
+
+    function persistLlmProviderMode(mode) {
+        window.localStorage.setItem(LLM_PROVIDER_MODE_STORAGE_KEY, mode);
+    }
+
+    function getProviderOptionsByMode(mode) {
+        return mode === 'dual' ? DUAL_PROVIDER_OPTIONS : SINGLE_PROVIDER_OPTIONS;
+    }
+
+    function renderProviderOptions(mode, preferredValue) {
+        const options = getProviderOptionsByMode(mode);
+        llmProviderSelect.innerHTML = '';
+        options.forEach(option => {
+            const optionEl = document.createElement('option');
+            optionEl.value = option.value;
+            optionEl.textContent = `${option.label} / ${option.model}`;
+            llmProviderSelect.appendChild(optionEl);
+        });
+        const fallbackValue = options[0]?.value || '';
+        llmProviderSelect.value = options.some(option => option.value === preferredValue) ? preferredValue : fallbackValue;
+        persistLlmProvider(llmProviderSelect.value);
+        persistLlmProviderMode(mode);
+        singleModeBtn.classList.toggle('active', mode === 'single');
+        dualModeBtn.classList.toggle('active', mode === 'dual');
     }
 
     function setStatus(text, type) {
@@ -2013,7 +2075,7 @@
     }
 
     async function restoreConversation() {
-        llmProviderSelect.value = loadLlmProvider();
+        renderProviderOptions(loadLlmProviderMode(), loadLlmProvider());
         persistConversationId();
         chatBox.innerHTML = '';
         resetPanels();
@@ -2032,8 +2094,8 @@
 
             if (data.latest_result) {
                 if (data.latest_result.llm_provider) {
-                    llmProviderSelect.value = data.latest_result.llm_provider;
-                    persistLlmProvider(data.latest_result.llm_provider);
+                    const providerMode = String(data.latest_result.llm_provider || '').startsWith('local_') ? 'dual' : 'single';
+                    renderProviderOptions(providerMode, data.latest_result.llm_provider);
                 }
                 applyResultPayload(data.latest_result, { appendAssistantMessage: false });
                 setStatus('已恢复上一次会话', 'ok');
@@ -2408,8 +2470,8 @@
             conversationId = data.conversation_id || conversationId;
             persistConversationId();
             if (data.llm_provider) {
-                llmProviderSelect.value = data.llm_provider;
-                persistLlmProvider(data.llm_provider);
+                const providerMode = String(data.llm_provider || '').startsWith('local_') ? 'dual' : 'single';
+                renderProviderOptions(providerMode, data.llm_provider);
             }
 
             if (data.reply_type === 'clarify') {
@@ -2507,6 +2569,20 @@
         if (!currentResultState.rows.length) {
             updateContextIndicator(null);
         }
+    });
+    singleModeBtn.addEventListener('click', () => {
+        renderProviderOptions('single', loadLlmProvider());
+        if (!currentResultState.rows.length) {
+            updateContextIndicator(null);
+        }
+        setStatus(`已切换到单引擎：${llmProviderSelect.options[llmProviderSelect.selectedIndex]?.text || '--'}`, 'ok');
+    });
+    dualModeBtn.addEventListener('click', () => {
+        renderProviderOptions('dual', loadLlmProvider());
+        if (!currentResultState.rows.length) {
+            updateContextIndicator(null);
+        }
+        setStatus(`已切换到双引擎：${llmProviderSelect.options[llmProviderSelect.selectedIndex]?.text || '--'}`, 'ok');
     });
     reportTemplateSelect.addEventListener('change', updateExportButtons);
     timeRangeStartEl.addEventListener('change', onTimeRangeChange);

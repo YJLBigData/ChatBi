@@ -6,6 +6,7 @@ def build_report_prompts(
     context_text: str,
     preview_text: str,
     template_prompt_text: str = '',
+    security_note: str = '',
 ) -> tuple[str, str]:
     system_prompt = (
         '你是资深商业分析总监，面向管理层撰写经营分析报告。'
@@ -37,6 +38,8 @@ def build_report_prompts(
         f"上下文摘要：\n{context_text}\n\n"
         f"结果样本（最多前{REPORT_PREVIEW_MAX_ROWS}行）：\n{preview_text}"
     )
+    if security_note:
+        user_prompt += f"\n\n安全与路由说明：\n{security_note}"
     if template_prompt_text:
         user_prompt += f"\n\n报告模板要求：\n{template_prompt_text}"
     return system_prompt, user_prompt

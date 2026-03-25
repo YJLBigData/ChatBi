@@ -19,7 +19,15 @@ from chatbi.repository.chat_repository import (
 from chatbi.repository.db import get_db_conn
 from chatbi.service.context_service import build_context_bundle, estimate_text_tokens, normalize_context_stats
 from chatbi.service.conversation_service import normalize_name_list, normalize_time_granularity, save_latest_result
-from chatbi.service.llm_service import chat_completion, get_llm_provider_meta, normalize_llm_provider, DEFAULT_PROVIDER
+from chatbi.service.llm_service import (
+    DEFAULT_PROVIDER,
+    build_execution_plan,
+    chat_completion,
+    get_llm_provider_meta,
+    local_rewrite,
+    normalize_llm_provider,
+)
+from chatbi.service.security_service import build_security_prompt_note, classify_security_level, filter_knowledge_context_for_online
 from chatbi.utils.question_utils import compact_whitespace, is_context_dependent_question
 from semantic_layer import retrieve_semantic_context
 
@@ -364,6 +372,38 @@ def build_metric_description_fallback(
     )
 
 
+def maybe_rewrite_question_for_local(question: str, history_records: list[dict[str, Any]], llm_provider: str) -> str:
+    llm_meta = get_llm_provider_meta(llm_provider)
+    normalized_provider = normalize_llm_provider(llm_provider)
+    if normalized_provider != 'local':
+        return question
+    if not is_context_dependent_question(question):
+        return question
+    history_lines = []
+    for row in history_records[-4:]:
+        role = '用户' if row.get('role') == 'user' else '助手'
+        content = compact_whitespace(str(row.get('display_content') or row.get('content') or ''))
+        if content:
+            history_lines.append(f'{role}: {content[:180]}')
+    rewrite_prompt = (
+        '请把当前问题改写成更明确、可直接检索业务语义的一句话。'
+        '如果当前问题已经足够清晰，直接原样返回。'
+        f'\n最近对话:\n{chr(10).join(history_lines) or "无"}'
+        f'\n当前问题:\n{question}'
+    )
+    try:
+        rewritten = compact_whitespace(local_rewrite(rewrite_prompt))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('local rewrite skipped provider=%s error=%s', llm_provider, exc)
+        return question
+    if not rewritten:
+        return question
+    if len(rewritten) > max(len(question) * 2, 120):
+        return question
+    logger.info('local rewrite applied provider=%s original=%s rewritten=%s', llm_provider, question[:160], rewritten[:160])
+    return rewritten
+
+
 def extract_expression_column_refs(expression: str) -> tuple[set[str], set[str]]:
     qualified_refs: set[str] = set()
     bare_columns: set[str] = set()
@@ -454,6 +494,7 @@ def generate_query_plan_by_llm(
 ) -> dict[str, Any]:
     llm_provider = normalize_llm_provider(llm_provider) or DEFAULT_PROVIDER
     llm_meta = get_llm_provider_meta(llm_provider)
+    semantic_question = maybe_rewrite_question_for_local(question, history_records, llm_provider)
     prior_result: dict[str, Any] | None = None
     if is_context_dependent_question(question):
         session_row = get_chat_session_row(conversation_id) or {}
@@ -466,18 +507,33 @@ def generate_query_plan_by_llm(
         except Exception:  # noqa: BLE001
             prior_result = None
     semantic_context = retrieve_semantic_context(
-        question,
+        semantic_question,
         [{'role': row['role'], 'content': row['content']} for row in history_records],
         carryover_context=prior_result,
         prompt_mode='query',
     )
+    knowledge_context = semantic_context.get('knowledge_context') or {}
+    security_info = classify_security_level(question, semantic_context, knowledge_context)
+    execution_plan = build_execution_plan(llm_provider, 'query_plan', security_info['security_level'])
+    effective_knowledge_context = knowledge_context
+    if execution_plan.get('providers', [''])[0] != 'local':
+        effective_knowledge_context = filter_knowledge_context_for_online(knowledge_context, security_info['security_level'])
+    semantic_prompt_text = semantic_context.get('base_prompt_text') or semantic_context['prompt_text']
+    if effective_knowledge_context.get('prompt_text'):
+        semantic_prompt_text = f"{semantic_prompt_text}\n\n本地结构化知识层:\n{effective_knowledge_context['prompt_text']}"
+    security_note = build_security_prompt_note(
+        security_info['security_level'],
+        security_info.get('security_reasons', []),
+        execution_plan,
+    )
     logger.info(
-        'query plan start conversation_id=%s request_id=%s round_no=%s candidate_tables=%s candidate_metrics=%s',
+        'query plan start conversation_id=%s request_id=%s round_no=%s candidate_tables=%s candidate_metrics=%s security=%s',
         conversation_id,
         request_id or '',
         round_no or 0,
         ','.join(semantic_context['candidate_tables']),
         ','.join(semantic_context['candidate_metrics']),
+        security_info['security_level'],
     )
     context_bundle = build_context_bundle(
         conversation_id,
@@ -487,7 +543,7 @@ def generate_query_plan_by_llm(
         request_id=request_id,
         round_no=round_no,
     )
-    system_prompt, user_prompt = build_query_plan_prompts(semantic_context['prompt_text'], context_bundle['history_text'], question)
+    system_prompt, user_prompt = build_query_plan_prompts(semantic_prompt_text, context_bundle['history_text'], question, security_note)
     prompt_token_estimate = estimate_text_tokens(system_prompt) + estimate_text_tokens(user_prompt) + 24
     context_stats = normalize_context_stats(
         {
@@ -513,6 +569,7 @@ def generate_query_plan_by_llm(
         request_id=request_id,
         round_no=round_no,
         temperature=0,
+        security_level=security_info['security_level'],
     )
     payload = extract_json_payload(response['content'])
     action = str(payload.get('action', 'query')).strip().lower()
@@ -554,8 +611,11 @@ def generate_query_plan_by_llm(
             'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
             'llm_provider': llm_meta['provider'],
             'llm_provider_label': llm_meta['label'],
-            'model': llm_meta['model'],
+            'model': response['model'],
             'context_stats': context_stats,
+            'security_level': security_info['security_level'],
+            'security_reasons': security_info['security_reasons'],
+            'execution_plan': execution_plan,
         }
     if not metrics:
         metrics = normalize_name_list(semantic_context.get('candidate_metrics', []))[:3]
@@ -609,8 +669,11 @@ def generate_query_plan_by_llm(
         'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
         'llm_provider': llm_meta['provider'],
         'llm_provider_label': llm_meta['label'],
-        'model': llm_meta['model'],
+        'model': response['model'],
         'context_stats': context_stats,
+        'security_level': security_info['security_level'],
+        'security_reasons': security_info['security_reasons'],
+        'execution_plan': execution_plan,
     }
 
 
@@ -627,11 +690,25 @@ def repair_sql_by_llm(
     round_no: int | None = None,
 ) -> str:
     semantic_context = retrieve_semantic_context(
-        question,
+        maybe_rewrite_question_for_local(question, history_records, llm_provider),
         [{'role': row['role'], 'content': row['content']} for row in history_records],
         carryover_context=None,
         prompt_mode='repair',
         extra_sql_text=failed_sql,
+    )
+    knowledge_context = semantic_context.get('knowledge_context') or {}
+    security_info = classify_security_level(question, semantic_context, knowledge_context)
+    execution_plan = build_execution_plan(llm_provider, 'sql_repair', security_info['security_level'])
+    effective_knowledge_context = knowledge_context
+    if execution_plan.get('providers', [''])[0] != 'local':
+        effective_knowledge_context = filter_knowledge_context_for_online(knowledge_context, security_info['security_level'])
+    semantic_prompt_text = semantic_context.get('base_repair_prompt_text') or semantic_context.get('repair_prompt_text') or semantic_context['prompt_text']
+    if effective_knowledge_context.get('prompt_text'):
+        semantic_prompt_text = f"{semantic_prompt_text}\n\n本地结构化知识层:\n{effective_knowledge_context['prompt_text']}"
+    security_note = build_security_prompt_note(
+        security_info['security_level'],
+        security_info.get('security_reasons', []),
+        execution_plan,
     )
     history_text = build_context_bundle(
         conversation_id,
@@ -642,11 +719,12 @@ def repair_sql_by_llm(
         round_no=round_no,
     )['history_text']
     system_prompt, user_prompt = build_sql_repair_prompts(
-        semantic_context.get('repair_prompt_text') or semantic_context['prompt_text'],
+        semantic_prompt_text,
         history_text,
         question,
         failed_sql,
         error_message,
+        security_note,
     )
     response = chat_completion(
         stage='sql_repair',
@@ -660,6 +738,7 @@ def repair_sql_by_llm(
         request_id=request_id,
         round_no=round_no,
         temperature=0,
+        security_level=security_info['security_level'],
     )
     payload = extract_json_payload(response['content'])
     repaired_sql = str(payload.get('sql', '')).strip()
@@ -722,8 +801,13 @@ def handle_user_query(
             'candidate_dimension_rules': llm_result.get('candidate_dimension_rules', []),
             'llm_provider': llm_result['llm_provider'],
             'llm_provider_label': llm_result['llm_provider_label'],
+            'actual_provider': llm_result.get('actual_provider', llm_result['llm_provider']),
+            'actual_provider_label': llm_result.get('actual_label', llm_result['llm_provider_label']),
             'model': llm_result['model'],
             'context_stats': llm_result['context_stats'],
+            'security_level': llm_result.get('security_level', 'S1'),
+            'security_reasons': llm_result.get('security_reasons', []),
+            'execution_plan': llm_result.get('execution_plan', {}),
         }
         save_latest_result(conversation_id, clarify_payload)
         return clarify_payload
@@ -811,8 +895,13 @@ def handle_user_query(
         'row_count': len(rows),
         'llm_provider': llm_result['llm_provider'],
         'llm_provider_label': llm_result['llm_provider_label'],
+        'actual_provider': llm_result.get('actual_provider', llm_result['llm_provider']),
+        'actual_provider_label': llm_result.get('actual_label', llm_result['llm_provider_label']),
         'model': llm_result['model'],
         'context_stats': llm_result['context_stats'],
+        'security_level': llm_result.get('security_level', 'S1'),
+        'security_reasons': llm_result.get('security_reasons', []),
+        'execution_plan': llm_result.get('execution_plan', {}),
     }
     save_latest_result(conversation_id, result_payload)
     logger.info(

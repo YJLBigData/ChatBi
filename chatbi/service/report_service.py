@@ -12,6 +12,7 @@ from chatbi.repository.db import get_db_conn
 from chatbi.service.context_service import build_context_bundle
 from chatbi.service.conversation_service import get_latest_result_or_raise
 from chatbi.service.llm_service import chat_completion, get_llm_provider_meta
+from chatbi.service.security_service import build_security_prompt_note
 from reporting import (
     build_template_markdown_text,
     build_chart_word_bytes,
@@ -163,6 +164,11 @@ def generate_report_content_by_llm(
         context_text,
         preview_text,
         clamp_template_prompt_text(build_template_markdown_text(template_row)),
+        build_security_prompt_note(
+            str(latest_result.get('security_level') or 'S1'),
+            list(latest_result.get('security_reasons') or []),
+            {'providers': [llm_provider], 'strategy_label': '报告生成'},
+        ),
     )
     response = chat_completion(
         stage='report_generate',
@@ -176,6 +182,7 @@ def generate_report_content_by_llm(
         request_id=request_id,
         round_no=round_no,
         temperature=0.2,
+        security_level=str(latest_result.get('security_level') or 'S1'),
     )
     payload = extract_json_payload(response['content'])
     logger.info(

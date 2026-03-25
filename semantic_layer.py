@@ -13,9 +13,19 @@ import pymysql
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from chatbi.config import TASK_TYPE_SEMANTIC_REBUILD
+from chatbi.config import (
+    EMBEDDING_PROVIDER,
+    KNOWLEDGE_CONTEXT_TOPN,
+    LOCAL_EMBEDDING_BASE_URL,
+    LOCAL_EMBEDDING_MODEL,
+    SEMANTIC_RERANK_FINAL_N,
+    SEMANTIC_RERANK_TOPK,
+    TASK_TYPE_SEMANTIC_REBUILD,
+)
 from chatbi.repository.task_repository import get_latest_task_by_type, get_query_plan_quality_stats
 from chatbi.service.data_quality_service import get_latest_data_quality_summary
+from chatbi.service.knowledge_service import ensure_knowledge_runtime, invalidate_knowledge_cache, retrieve_knowledge_context
+from chatbi.service.rerank_service import rerank_semantic_docs
 from chatbi.utils.question_utils import is_context_dependent_question
 
 
@@ -38,6 +48,7 @@ DASHSCOPE_BASE_URL = os.getenv(
     "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 DASHSCOPE_EMBEDDING_MODEL = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
+LOCAL_EMBEDDING_PROVIDER = os.getenv("LOCAL_EMBEDDING_PROVIDER", EMBEDDING_PROVIDER).lower()
 SEMANTIC_VECTOR_TOPK = int(os.getenv("SEMANTIC_VECTOR_TOPK", "12"))
 SEMANTIC_FULLTEXT_TOPK = int(os.getenv("SEMANTIC_FULLTEXT_TOPK", "12"))
 SEMANTIC_RUNTIME_READY = False
@@ -1181,21 +1192,42 @@ def get_distinct_dimension_values(table_name: str, column_name: str) -> tuple[st
     return tuple(values)
 
 
-def _get_embedding_client() -> OpenAI | None:
-    if not DASHSCOPE_API_KEY:
-        return None
-    return OpenAI(api_key=DASHSCOPE_API_KEY, base_url=DASHSCOPE_BASE_URL)
+def _get_embedding_client() -> tuple[OpenAI | None, str, str]:
+    provider = str(LOCAL_EMBEDDING_PROVIDER or 'auto').lower()
+    if provider in {'auto', 'local'} and LOCAL_EMBEDDING_BASE_URL:
+        try:
+            return OpenAI(api_key='local', base_url=LOCAL_EMBEDDING_BASE_URL), LOCAL_EMBEDDING_MODEL, 'local'
+        except Exception:  # noqa: BLE001
+            if provider == 'local':
+                return None, '', ''
+    if provider in {'auto', 'dashscope'} and DASHSCOPE_API_KEY:
+        return OpenAI(api_key=DASHSCOPE_API_KEY, base_url=DASHSCOPE_BASE_URL), DASHSCOPE_EMBEDDING_MODEL, 'dashscope'
+    return None, '', ''
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
-    client = _get_embedding_client()
+    client, model_name, provider_name = _get_embedding_client()
     if client is None or not texts:
         return []
     try:
-        response = client.embeddings.create(model=DASHSCOPE_EMBEDDING_MODEL, input=texts)
+        response = client.embeddings.create(model=model_name, input=texts)
     except Exception:  # noqa: BLE001
-        return []
+        if provider_name == 'local' and DASHSCOPE_API_KEY:
+            try:
+                fallback_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=DASHSCOPE_BASE_URL)
+                response = fallback_client.embeddings.create(model=DASHSCOPE_EMBEDDING_MODEL, input=texts)
+            except Exception:  # noqa: BLE001
+                return []
+        else:
+            return []
     return [item.embedding for item in response.data]
+
+
+def _resolve_embedding_model_name() -> str:
+    provider = str(LOCAL_EMBEDDING_PROVIDER or 'auto').lower()
+    if provider in {'local', 'auto'} and LOCAL_EMBEDDING_BASE_URL:
+        return LOCAL_EMBEDDING_MODEL
+    return DASHSCOPE_EMBEDDING_MODEL
 
 
 def _ensure_fulltext_index(cursor: pymysql.cursors.DictCursor) -> None:
@@ -1382,7 +1414,7 @@ def sync_semantic_schema(conn: pymysql.connections.Connection | None = None) -> 
             WHERE t.TABLE_SCHEMA = DATABASE()
               AND t.TABLE_NAME IN (
                   'order_master', 'order_detail', 'user_info', 'product_info',
-                  'store_info', 'refund_master', 'refund_detail'
+                  'store_info', 'refund_master', 'refund_detail', 'inventory_stock'
               )
             ORDER BY t.TABLE_NAME
             """
@@ -1521,6 +1553,7 @@ def _load_semantic_entities(conn: pymysql.connections.Connection) -> dict[str, A
 
 
 def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, refresh_embeddings: bool = False) -> dict[str, int]:
+    invalidate_knowledge_cache()
     owns_conn = conn is None
     if owns_conn:
         conn = get_db_conn()
@@ -1838,7 +1871,7 @@ def refresh_pending_embeddings(conn: pymysql.connections.Connection | None = Non
                         `updated_at` = NOW()
                     WHERE `id` = %s
                     """,
-                    (json.dumps(embedding), DASHSCOPE_EMBEDDING_MODEL, row["id"]),
+                    (json.dumps(embedding), _resolve_embedding_model_name(), row["id"]),
                 )
                 updated += 1
         conn.commit()
@@ -1853,6 +1886,7 @@ def ensure_semantic_runtime(refresh_embeddings: bool = False) -> None:
     if SEMANTIC_RUNTIME_READY and not refresh_embeddings:
         return
     with get_db_conn() as conn:
+        ensure_knowledge_runtime(conn)
         with conn.cursor() as cursor:
             for ddl in DDL_STATEMENTS:
                 cursor.execute(ddl)
@@ -2344,6 +2378,7 @@ def retrieve_semantic_context(
             final_score = score + float(doc.get("priority_score") or 0) / 10
             scored_docs.append((doc, final_score))
 
+        score_floor = 4.0
         if not scored_docs:
             for doc in docs:
                 if doc["source_type"] == "table" and doc["source_key"] == "order_master":
@@ -2353,7 +2388,14 @@ def retrieve_semantic_context(
         scored_docs.sort(key=lambda item: item[1], reverse=True)
         if scored_docs:
             score_floor = max(4.0, scored_docs[0][1] * 0.35)
-            scored_docs = [item for item in scored_docs if item[1] >= score_floor] or scored_docs[:6]
+            recall_docs = [item for item in scored_docs if item[1] >= score_floor] or scored_docs[:6]
+            scored_docs = rerank_semantic_docs(
+                question,
+                recall_docs,
+                carryover_context=carryover_context,
+                top_k=SEMANTIC_RERANK_TOPK,
+                top_n=SEMANTIC_RERANK_FINAL_N,
+            )
 
         metric_lookup = {item["metric_code"]: item for item in entities["metrics"]}
         dimension_lookup = {item["dimension_code"]: item for item in entities["dimensions"]}
@@ -2531,7 +2573,15 @@ def retrieve_semantic_context(
             if row["dimension_code"] not in {item["dimension_code"] for item in selected_group_dimension_rows}
         ]
 
-        prompt_text = _build_semantic_prompt_text(
+        knowledge_context = retrieve_knowledge_context(
+            question,
+            [row["table_name"] for row in selected_table_rows],
+            [row["metric_name"] for row in selected_metric_rows],
+            [row["dimension_name"] for row in selected_dimension_rows],
+            top_n=KNOWLEDGE_CONTEXT_TOPN,
+        )
+
+        base_prompt_text = _build_semantic_prompt_text(
             question=question,
             selected_metric_rows=selected_metric_rows,
             selected_dimension_rows=selected_dimension_rows,
@@ -2541,7 +2591,10 @@ def retrieve_semantic_context(
             column_map=column_map,
             prompt_mode="query",
         )
-        repair_prompt_text = _build_semantic_prompt_text(
+        prompt_text = base_prompt_text
+        if knowledge_context.get("prompt_text"):
+            prompt_text = f"{prompt_text}\n\n本地结构化知识层:\n{knowledge_context['prompt_text']}"
+        base_repair_prompt_text = _build_semantic_prompt_text(
             question=question,
             selected_metric_rows=selected_metric_rows,
             selected_dimension_rows=selected_dimension_rows,
@@ -2552,6 +2605,9 @@ def retrieve_semantic_context(
             prompt_mode="repair" if prompt_mode == "repair" else "query",
             extra_sql_text=extra_sql_text,
         )
+        repair_prompt_text = base_repair_prompt_text
+        if knowledge_context.get("prompt_text"):
+            repair_prompt_text = f"{repair_prompt_text}\n\n本地结构化知识层:\n{knowledge_context['prompt_text']}"
 
         return {
             "candidate_tables": [row["table_name"] for row in selected_table_rows],
@@ -2599,6 +2655,9 @@ def retrieve_semantic_context(
             ],
             "candidate_joins": selected_join_rows,
             "candidate_examples": [example.get("question_text", "") for example in selected_example_rows],
+            "knowledge_context": knowledge_context,
+            "base_prompt_text": base_prompt_text,
+            "base_repair_prompt_text": base_repair_prompt_text,
             "prompt_text": prompt_text,
             "repair_prompt_text": repair_prompt_text,
         }
