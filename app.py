@@ -88,7 +88,12 @@ def normalize_chart_images(raw_items: Any) -> list[dict[str, str]]:
             break
         if not isinstance(item, dict):
             continue
-        png_data_url = str(item.get('png_data_url', '')).strip()
+        png_data_url = str(
+            item.get('png_data_url')
+            or item.get('dataUrl')
+            or item.get('data_url')
+            or ''
+        ).strip()
         if not png_data_url.startswith('data:image/png;base64,'):
             continue
         normalized.append(

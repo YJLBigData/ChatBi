@@ -5,6 +5,8 @@ import json
 import math
 import os
 import re
+import urllib.error
+import urllib.request
 from collections import defaultdict, deque
 from functools import lru_cache
 from typing import Any
@@ -1196,7 +1198,8 @@ def _get_embedding_client() -> tuple[OpenAI | None, str, str]:
     provider = str(LOCAL_EMBEDDING_PROVIDER or 'auto').lower()
     if provider in {'auto', 'local'} and LOCAL_EMBEDDING_BASE_URL:
         try:
-            return OpenAI(api_key='local', base_url=LOCAL_EMBEDDING_BASE_URL), LOCAL_EMBEDDING_MODEL, 'local'
+            resolved_model = _resolve_local_embedding_model_id()
+            return OpenAI(api_key='local', base_url=LOCAL_EMBEDDING_BASE_URL), resolved_model, 'local'
         except Exception:  # noqa: BLE001
             if provider == 'local':
                 return None, '', ''
@@ -1226,8 +1229,34 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
 def _resolve_embedding_model_name() -> str:
     provider = str(LOCAL_EMBEDDING_PROVIDER or 'auto').lower()
     if provider in {'local', 'auto'} and LOCAL_EMBEDDING_BASE_URL:
-        return LOCAL_EMBEDDING_MODEL
+        return _resolve_local_embedding_model_id()
     return DASHSCOPE_EMBEDDING_MODEL
+
+
+@lru_cache(maxsize=1)
+def _resolve_local_embedding_model_id() -> str:
+    configured = str(LOCAL_EMBEDDING_MODEL or '').strip()
+    base_url = str(LOCAL_EMBEDDING_BASE_URL or '').strip().rstrip('/')
+    if not base_url:
+        return configured or 'local-embedding-model'
+
+    models_url = f'{base_url}/models' if base_url.endswith('/v1') else f'{base_url}/v1/models'
+    try:
+        with urllib.request.urlopen(models_url, timeout=10) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        model_rows = payload.get('data') or []
+        model_ids = [str(row.get('id') or '').strip() for row in model_rows if str(row.get('id') or '').strip()]
+        if not model_ids:
+            return configured or 'local-embedding-model'
+        if configured in model_ids:
+            return configured
+        if configured:
+            for model_id in model_ids:
+                if model_id.endswith(f'/{configured}') or model_id.endswith(configured):
+                    return model_id
+        return model_ids[0]
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return configured or 'local-embedding-model'
 
 
 def _ensure_fulltext_index(cursor: pymysql.cursors.DictCursor) -> None:
@@ -1829,7 +1858,9 @@ def rebuild_semantic_search(conn: pymysql.connections.Connection | None = None, 
 
 
 def refresh_pending_embeddings(conn: pymysql.connections.Connection | None = None, limit: int = 300) -> int:
-    if not DASHSCOPE_API_KEY:
+    provider = str(LOCAL_EMBEDDING_PROVIDER or 'auto').lower()
+    has_local_embedding = provider in {'local', 'auto'} and bool(str(LOCAL_EMBEDDING_BASE_URL or '').strip())
+    if not has_local_embedding and not DASHSCOPE_API_KEY:
         return 0
     owns_conn = conn is None
     if owns_conn:

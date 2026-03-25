@@ -21,6 +21,12 @@ from chatbi.service.runtime_service import ensure_runtime_ready
 
 
 SECURITY_RANK = {'S0': 0, 'S1': 1, 'S2': 2}
+EVAL_NAME_ALIAS_MAP = {
+    '订单总数': '订单数',
+    'gmv': '销售金额',
+    '营业额': '销售金额',
+    '退货量': '退款单数',
+}
 
 
 @dataclass
@@ -104,8 +110,13 @@ def _expected_tables_met(actual_sql: str, expected_tables: list[str]) -> bool:
 def _subset_met(expected: list[str], actual: list[str]) -> bool:
     if not expected:
         return True
-    expected_set = {item.strip() for item in expected if item.strip()}
-    actual_set = {item.strip() for item in actual if item.strip()}
+
+    def normalize_name(value: str) -> str:
+        normalized = str(value or '').strip().lower()
+        return EVAL_NAME_ALIAS_MAP.get(normalized, normalized)
+
+    expected_set = {normalize_name(item) for item in expected if str(item).strip()}
+    actual_set = {normalize_name(item) for item in actual if str(item).strip()}
     return expected_set.issubset(actual_set)
 
 

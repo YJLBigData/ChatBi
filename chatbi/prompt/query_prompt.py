@@ -33,7 +33,8 @@ def build_query_plan_prompts(semantic_prompt_text: str, history_text: str, quest
         '13) 日期区间优先使用 DATE_SUB、DATE_ADD、DATE() 等 MySQL 常见写法。'
         '14) 只能使用候选语义层里真实出现的表、字段和关联关系；sql 只能是 SELECT 或 WITH；未限制条数时默认 LIMIT 200。'
         '15) 库存问题若未明确时间范围，默认使用最新快照；可售库存使用 available_qty，在库量使用 on_hand_qty，在途库存使用 in_transit_qty，库存金额使用 inventory_amount，缺货SKU数使用 available_qty <= 0 的去重 product_id。'
-        '16) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
+        '16) 库存问题中如果按品牌、产品、系列、品类等商品维度分析，必须通过 product_info 关联 inventory_stock.product_id，禁止为了取品牌或产品维度去关联 order_detail。'
+        '17) 问题带时间语义时，必须返回对应的 time_granularity 和时间范围；没有时间则返回 none。'
     )
     user_prompt = semantic_prompt_text
     if security_note:
@@ -55,7 +56,8 @@ def build_sql_repair_prompts(semantic_prompt_text: str, history_text: str, quest
         '2) 优先修复 MySQL 方言问题、引号、日期写法、join、聚合和别名错误。中文别名必须用反引号或裸别名，禁止双引号。'
         '3) 下单日期只能用 created_at 或 DATE(order_master.created_at)，禁止虚拟日期列。'
         '4) 商品粒度销售金额必须用 order_detail.line_paid_amount 或 line_gross_amount。'
-        '5) 只做必要修改，保留原业务意图。'
+        '5) 库存问题如果要取品牌、产品、系列或品类维度，只能关联 product_info，禁止把 inventory_stock 关联到 order_detail。'
+        '6) 只做必要修改，保留原业务意图。'
     )
     user_prompt = semantic_prompt_text
     if security_note:

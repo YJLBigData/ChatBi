@@ -85,6 +85,13 @@ COLUMN_REF_PATTERN = re.compile(
     r'\b(order_master|order_detail|refund_master|refund_detail|store_info|user_info|product_info|inventory_stock)\.([a-zA-Z_][\w]*)\b',
     re.IGNORECASE,
 )
+SQL_ALIAS_PATTERN = re.compile(r'\bAS\s+[`"]?(?P<alias>[^`",\n]+)[`"]?', re.IGNORECASE)
+INVENTORY_JOIN_ORDER_DETAIL_PATTERN = re.compile(r'\bJOIN\s+order_detail\b', re.IGNORECASE)
+INVENTORY_TABLE_REF_PATTERN = re.compile(r'\border_detail\.', re.IGNORECASE)
+INVENTORY_FROM_PATTERN = re.compile(
+    r'\bFROM\s+inventory_stock(?:\s+(?:AS\s+)?(?P<alias>[a-zA-Z_][\w]*))?(?=\s+(?:JOIN|WHERE|GROUP|ORDER|LIMIT)\b|\s*$)',
+    re.IGNORECASE,
+)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -278,6 +285,48 @@ def apply_default_metric_filters(sql: str, question: str, selected_metrics: list
     return rewritten_sql
 
 
+def is_inventory_question(question: str, selected_metrics: list[str]) -> bool:
+    normalized_question = compact_whitespace(question or '')
+    inventory_metrics = {'在库量', '可售库存', '在途库存', '库存金额', '缺货SKU数'}
+    return (
+        '库存' in normalized_question
+        or '仓库' in normalized_question
+        or any(metric in inventory_metrics for metric in (selected_metrics or []))
+    )
+
+
+def apply_inventory_query_guards(sql: str, question: str, selected_metrics: list[str]) -> str:
+    normalized_sql = str(sql or '').strip()
+    lower_sql = normalized_sql.lower()
+    if 'inventory_stock' not in lower_sql or not is_inventory_question(question, selected_metrics):
+        return normalized_sql
+
+    rewritten_sql = normalized_sql
+    if 'join order_detail' in lower_sql and 'join product_info' not in lower_sql:
+        rewritten_sql = INVENTORY_JOIN_ORDER_DETAIL_PATTERN.sub('JOIN product_info', rewritten_sql)
+        rewritten_sql = INVENTORY_TABLE_REF_PATTERN.sub('product_info.', rewritten_sql)
+        logger.info('inventory sql join normalized sql=%s', rewritten_sql[:800])
+
+    if 'snapshot_date' not in rewritten_sql.lower():
+        from_match = INVENTORY_FROM_PATTERN.search(rewritten_sql)
+        inventory_alias = (from_match.group('alias') if from_match and from_match.group('alias') else 'inventory_stock').strip()
+        snapshot_clause = f"{inventory_alias}.snapshot_date = (SELECT MAX(snapshot_date) FROM inventory_stock)"
+        tail_match = SQL_TAIL_CLAUSE_PATTERN.search(rewritten_sql)
+        insert_at = tail_match.start() if tail_match else len(rewritten_sql)
+        head = rewritten_sql[:insert_at].rstrip()
+        tail = rewritten_sql[insert_at:].lstrip()
+        has_where_clause = bool(re.search(r'\bwhere\b', rewritten_sql, re.IGNORECASE))
+        if has_where_clause:
+            rewritten_sql = f"{head}\n  AND {snapshot_clause}"
+        else:
+            rewritten_sql = f"{head}\nWHERE {snapshot_clause}"
+        if tail:
+            rewritten_sql = f"{rewritten_sql}\n{tail}"
+        logger.info('inventory sql latest snapshot enforced sql=%s', rewritten_sql[:800])
+
+    return rewritten_sql
+
+
 def validate_and_normalize_sql(sql: str) -> str:
     normalized = normalize_sql_mysql_dialect(sql)
     if not normalized:
@@ -331,7 +380,7 @@ def find_matching_rules(
             continue
         if any(rule_name == selected or rule_name in selected or selected in rule_name for selected in normalized_selected):
             matched_rules.append(rule)
-    return matched_rules or candidate_rules
+    return matched_rules
 
 
 def sanitize_question_for_definition(question: str) -> str:
@@ -423,6 +472,62 @@ def sql_mentions_semantic_columns(sql: str, expression: str) -> bool:
     return any(re.search(rf'\b{re.escape(column_name)}\b', normalized_sql) for column_name in bare_columns)
 
 
+def extract_sql_aliases(sql: str) -> set[str]:
+    aliases: set[str] = set()
+    for match in SQL_ALIAS_PATTERN.finditer(str(sql or '')):
+        alias = compact_whitespace(match.group('alias')).strip('`"').lower()
+        if alias:
+            aliases.add(alias)
+    return aliases
+
+
+def infer_rule_names_from_sql_and_question(
+    sql: str,
+    question: str,
+    candidate_rules: list[dict[str, Any]] | None,
+    *,
+    name_key: str,
+    expression_key: str,
+) -> list[str]:
+    rules = candidate_rules or []
+    if not rules:
+        return []
+
+    normalized_question = compact_whitespace(question or '').lower()
+    sql_aliases = extract_sql_aliases(sql)
+    ranked: list[tuple[int, str]] = []
+    for rule in rules:
+        rule_name = compact_whitespace(str(rule.get(name_key, ''))).strip()
+        if not rule_name:
+            continue
+        normalized_name = rule_name.lower()
+        score = 0
+        if normalized_name and normalized_name in normalized_question:
+            score += 3
+        if any(
+            normalized_name == alias
+            or normalized_name in alias
+            or alias in normalized_name
+            for alias in sql_aliases
+        ):
+            score += 4
+        expression = str(rule.get(expression_key, '')).strip()
+        if expression and sql_mentions_semantic_columns(sql, expression):
+            score += 5
+        if score > 0:
+            ranked.append((score, rule_name))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    seen: set[str] = set()
+    selected: list[str] = []
+    for _, name in ranked:
+        normalized = name.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        selected.append(name)
+    return selected
+
+
 def validate_semantic_alignment(
     sql: str,
     *,
@@ -437,11 +542,37 @@ def validate_semantic_alignment(
         candidate_group_dimension_rules or [],
         name_key='dimension_name',
     )
+    if not dimension_rules and selected_dimensions:
+        inferred_dimensions = infer_rule_names_from_sql_and_question(
+            sql,
+            question,
+            candidate_group_dimension_rules or [],
+            name_key='dimension_name',
+            expression_key='source_expression',
+        )
+        dimension_rules = find_matching_rules(
+            inferred_dimensions,
+            candidate_group_dimension_rules or [],
+            name_key='dimension_name',
+        )
     metric_rules = find_matching_rules(
         selected_metrics,
         candidate_metric_rules or [],
         name_key='metric_name',
     )
+    if not metric_rules and selected_metrics:
+        inferred_metrics = infer_rule_names_from_sql_and_question(
+            sql,
+            question,
+            candidate_metric_rules or [],
+            name_key='metric_name',
+            expression_key='default_expression',
+        )
+        metric_rules = find_matching_rules(
+            inferred_metrics,
+            candidate_metric_rules or [],
+            name_key='metric_name',
+        )
     issues: list[str] = []
     for rule in dimension_rules:
         dimension_name = str(rule.get('dimension_name', '')).strip()
@@ -611,12 +742,30 @@ def generate_query_plan_by_llm(
             'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
             'llm_provider': llm_meta['provider'],
             'llm_provider_label': llm_meta['label'],
+            'actual_provider': response.get('actual_provider', llm_meta['provider']),
+            'actual_label': response.get('actual_label', llm_meta['label']),
             'model': response['model'],
             'context_stats': context_stats,
             'security_level': security_info['security_level'],
             'security_reasons': security_info['security_reasons'],
             'execution_plan': execution_plan,
         }
+    if not dimensions:
+        dimensions = infer_rule_names_from_sql_and_question(
+            sql,
+            question,
+            semantic_context.get('candidate_group_dimension_rules', []) or semantic_context.get('candidate_dimension_rules', []),
+            name_key='dimension_name',
+            expression_key='source_expression',
+        )
+    if not metrics:
+        metrics = infer_rule_names_from_sql_and_question(
+            sql,
+            question,
+            semantic_context.get('candidate_metric_rules', []),
+            name_key='metric_name',
+            expression_key='default_expression',
+        )
     if not metrics:
         metrics = normalize_name_list(semantic_context.get('candidate_metrics', []))[:3]
     if not metric_definition:
@@ -669,6 +818,8 @@ def generate_query_plan_by_llm(
         'candidate_dimension_rules': semantic_context.get('candidate_dimension_rules', []),
         'llm_provider': llm_meta['provider'],
         'llm_provider_label': llm_meta['label'],
+        'actual_provider': response.get('actual_provider', llm_meta['provider']),
+        'actual_label': response.get('actual_label', llm_meta['label']),
         'model': response['model'],
         'context_stats': context_stats,
         'security_level': security_info['security_level'],
@@ -813,6 +964,7 @@ def handle_user_query(
         return clarify_payload
     sql = normalize_sql_filter_values(validate_and_normalize_sql(llm_result['sql']))
     sql = apply_default_metric_filters(sql, question, llm_result.get('metrics', []))
+    sql = apply_inventory_query_guards(sql, question, llm_result.get('metrics', []))
     try:
         validate_semantic_alignment(
             sql,
@@ -845,6 +997,7 @@ def handle_user_query(
         )
         sql = normalize_sql_filter_values(validate_and_normalize_sql(repaired_sql))
         sql = apply_default_metric_filters(sql, question, llm_result.get('metrics', []))
+        sql = apply_inventory_query_guards(sql, question, llm_result.get('metrics', []))
         validate_semantic_alignment(
             sql,
             question=question,

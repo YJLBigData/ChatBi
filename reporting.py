@@ -1020,7 +1020,7 @@ def add_chart_snapshots(document: Document, chart_images: list[dict[str, Any]], 
         return
     for index, chart in enumerate(chart_images, start=1):
         add_heading(document, styles, chart.get("title", "图表快照"), level=2)
-        image_data_url = chart.get("png_data_url", "")
+        image_data_url = chart.get("png_data_url") or chart.get("dataUrl") or chart.get("data_url") or ""
         image_bytes = decode_data_url(image_data_url)
         if not image_bytes:
             logger.warning(
